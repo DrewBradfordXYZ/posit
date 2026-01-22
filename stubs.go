@@ -1,17 +1,7 @@
 package posit
 
-// Stub implementations for phases 4-6.
+// Stub implementations for phases 5-6.
 // These will be replaced with full implementations in later phases.
-
-// minimizeCrossings orders nodes within layers to reduce edge crossings (Phase 4).
-// Stub: keeps initial order from buildLayers.
-func (s *layoutState) minimizeCrossings() {
-	for _, layer := range s.layers {
-		for order, id := range layer {
-			s.nodes[id].order = order
-		}
-	}
-}
 
 // assignCoordinates computes X/Y positions for all nodes (Phase 5).
 // Stub: simple grid layout.

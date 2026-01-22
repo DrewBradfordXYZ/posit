@@ -21,7 +21,7 @@ This document provides an overview of the Sugiyama algorithm execution phases as
 | 1. Cycle Removal | ✅ Complete | `acyclic.go` | 9 tests |
 | 2. Layer Assignment | ✅ Complete | `rank.go` | 11 tests |
 | 3. Dummy Nodes | ✅ Complete | `normalize.go` | 15 tests |
-| 4. Crossing Minimization | ⏳ Stub | `stubs.go` | - |
+| 4. Crossing Minimization | ✅ Complete | `order.go` | 13 tests |
 | 5. Coordinate Assignment | ⏳ Stub | `stubs.go` | - |
 | 6. Edge Routing | ⏳ Stub | `stubs.go` | - |
 
@@ -334,6 +334,6 @@ Continue to the individual phase documents for detailed implementation guidance:
 1. ✅ [Phase 1: Cycle Removal](./PHASE_1_CYCLE_REMOVAL.md) — Complete
 2. ✅ [Phase 2: Layer Assignment](./PHASE_2_LAYER_ASSIGNMENT.md) — Complete
 3. ✅ [Phase 3: Dummy Nodes](./PHASE_3_DUMMY_NODES.md) — Complete
-4. [Phase 4: Crossing Minimization](./PHASE_4_CROSSING_MINIMIZATION.md) — **Next**
-5. [Phase 5: Coordinate Assignment](./PHASE_5_COORDINATE_ASSIGNMENT.md)
+4. ✅ [Phase 4: Crossing Minimization](./PHASE_4_CROSSING_MINIMIZATION.md) — Complete
+5. [Phase 5: Coordinate Assignment](./PHASE_5_COORDINATE_ASSIGNMENT.md) — **Next**
 6. [Phase 6: Edge Routing](./PHASE_6_EDGE_ROUTING.md)

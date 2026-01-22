@@ -6,9 +6,7 @@ import "sort"
 func (s *layoutState) assignLayers() {
 	switch s.opts.Algorithm {
 	case NetworkSimplex:
-		// TODO: implement network simplex for optimal ranking
-		// For now, fall back to longest path
-		s.assignLayersLongestPath()
+		s.assignLayersNetworkSimplex()
 	default:
 		s.assignLayersLongestPath()
 	}

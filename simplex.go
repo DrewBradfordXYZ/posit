@@ -1,6 +1,9 @@
 package posit
 
-import "math"
+import (
+	"math"
+	"sort"
+)
 
 // spanningTree holds the tree structure for the network simplex algorithm.
 type spanningTree struct {
@@ -110,12 +113,13 @@ func (s *layoutState) slack(key edgeKey) int {
 func (s *layoutState) feasibleTree() *spanningTree {
 	tree := newSpanningTree()
 
-	// Start with arbitrary node
-	var root string
+	// Start with deterministic root (first node in sorted order)
+	nodeIDs := make([]string, 0, len(s.nodes))
 	for id := range s.nodes {
-		root = id
-		break
+		nodeIDs = append(nodeIDs, id)
 	}
+	sort.Strings(nodeIDs)
+	root := nodeIDs[0]
 	tree.addNode(root)
 
 	// Grow tree until all nodes included
@@ -329,8 +333,16 @@ func (t *spanningTree) assignCutValue(s *layoutState, v string) {
 
 // leaveEdge finds a tree edge with negative cut value.
 func (t *spanningTree) leaveEdge() (edgeKey, bool) {
+	// Get nodes in sorted order for deterministic iteration
+	nodeIDs := make([]string, 0, len(t.nodes))
+	for id := range t.nodes {
+		nodeIDs = append(nodeIDs, id)
+	}
+	sort.Strings(nodeIDs)
+
 	// Look for edges where child->parent has negative cut value
-	for v, node := range t.nodes {
+	for _, v := range nodeIDs {
+		node := t.nodes[v]
 		if node.parent == "" {
 			continue
 		}
@@ -368,13 +380,25 @@ func (t *spanningTree) enterEdge(s *layoutState, leave edgeKey) edgeKey {
 		flip = true
 	}
 
+	// Get edges in sorted order for deterministic iteration
+	edgeKeys := make([]edgeKey, 0, len(s.edges))
+	for key := range s.edges {
+		edgeKeys = append(edgeKeys, key)
+	}
+	sort.Slice(edgeKeys, func(i, j int) bool {
+		if edgeKeys[i].from != edgeKeys[j].from {
+			return edgeKeys[i].from < edgeKeys[j].from
+		}
+		return edgeKeys[i].to < edgeKeys[j].to
+	})
+
 	// Find non-tree edge with minimum slack that crosses the cut correctly.
 	// The entering edge must go from the tail side to the head side.
 	var best edgeKey
 	bestSlack := math.MaxInt
 	found := false
 
-	for key := range s.edges {
+	for _, key := range edgeKeys {
 		if t.isTreeEdge(key) {
 			continue
 		}

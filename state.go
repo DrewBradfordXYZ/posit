@@ -33,6 +33,14 @@ type layoutEdge struct {
 	minlen   int
 	reversed bool
 
+	// Edge label info
+	labelWidth   float64
+	labelHeight  float64
+	labelPos     LabelPosition
+	labelDummyID string  // ID of dummy node representing label (for position extraction)
+	labelX       float64 // computed label X coordinate
+	labelY       float64 // computed label Y coordinate
+
 	// Phase 6 output
 	points []EdgePoint
 }
@@ -59,6 +67,9 @@ type layoutState struct {
 	reversedEdges []edgeKey // edges to flip back
 	dummyChains   []string  // first dummy in each chain
 	dummyCounter  int       // for generating unique dummy IDs
+
+	// Self-loops (edges where source == target)
+	selfLoops []*layoutEdge
 }
 
 // newLayoutState initializes internal state from a Graph.
@@ -91,13 +102,22 @@ func newLayoutState(g *Graph, opts Options) *layoutState {
 		if existing := s.edges[key]; existing != nil {
 			// Aggregate: sum weights for duplicate edges
 			existing.weight += 1
+			// If this edge has label info and existing doesn't, copy it
+			if existing.labelWidth == 0 && e.labelWidth > 0 {
+				existing.labelWidth = e.labelWidth
+				existing.labelHeight = e.labelHeight
+				existing.labelPos = e.labelPos
+			}
 			continue
 		}
 
 		s.edges[key] = &layoutEdge{
-			key:    key,
-			weight: 1,
-			minlen: 1,
+			key:         key,
+			weight:      1,
+			minlen:      1,
+			labelWidth:  e.labelWidth,
+			labelHeight: e.labelHeight,
+			labelPos:    e.labelPos,
 		}
 
 		// Only add to adjacency lists once
@@ -130,12 +150,26 @@ func (s *layoutState) buildLayout() *Layout {
 		}
 	}
 
-	// Export edges
+	// Export edges with structured keys
+	// Note: The string key format "from->to" is used for backward compatibility.
+	// For unambiguous edge lookup, use Layout.Edge(from, to) method.
 	for key, e := range s.edges {
 		edgeID := key.from + "->" + key.to
-		layout.Edges[edgeID] = EdgeLayout{
+		edgeLayout := EdgeLayout{
+			From:   key.from,
+			To:     key.to,
 			Points: e.points,
 		}
+		// Include label position if edge has a label
+		if e.labelWidth > 0 || e.labelHeight > 0 {
+			edgeLayout.Label = &LabelLayout{
+				X:      e.labelX,
+				Y:      e.labelY,
+				Width:  e.labelWidth,
+				Height: e.labelHeight,
+			}
+		}
+		layout.Edges[edgeID] = edgeLayout
 	}
 
 	return layout

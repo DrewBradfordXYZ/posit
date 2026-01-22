@@ -16,6 +16,9 @@ func (s *layoutState) routeEdges() {
 
 	// Step 4: Add node boundary points
 	s.addNodeIntersections()
+
+	// Step 5: Restore self-loops with curved paths
+	s.restoreSelfLoops()
 }
 
 // buildEdgePaths walks dummy chains to create edge bend points.
@@ -54,6 +57,12 @@ func (s *layoutState) buildEdgePaths() {
 				break
 			}
 
+			// Check if this is the label dummy - extract its position
+			if edge.labelDummyID == current {
+				edge.labelX = node.x + node.width/2
+				edge.labelY = node.y + node.height/2
+			}
+
 			// Add dummy's position as bend point
 			// Use center of node (even though dummies have 0 size)
 			edge.points = append(edge.points, EdgePoint{
@@ -87,11 +96,24 @@ func (s *layoutState) buildEdgePaths() {
 	}
 }
 
-// initializeShortEdges ensures edges without dummies have points arrays.
+// initializeShortEdges ensures edges without dummies have points arrays
+// and calculates label positions for edges that span only one layer.
 func (s *layoutState) initializeShortEdges() {
-	for _, edge := range s.edges {
+	for key, edge := range s.edges {
 		if edge.points == nil {
 			edge.points = make([]EdgePoint, 0)
+		}
+
+		// Calculate label position for short edges (those without dummy nodes)
+		// These edges have no labelDummyID because they span only one layer
+		if edge.labelDummyID == "" && (edge.labelWidth > 0 || edge.labelHeight > 0) {
+			fromNode := s.nodes[key.from]
+			toNode := s.nodes[key.to]
+			if fromNode != nil && toNode != nil {
+				// Place label at midpoint between source and target centers
+				edge.labelX = (fromNode.x + fromNode.width/2 + toNode.x + toNode.width/2) / 2
+				edge.labelY = (fromNode.y + fromNode.height/2 + toNode.y + toNode.height/2) / 2
+			}
 		}
 	}
 }
@@ -206,4 +228,43 @@ func (s *layoutState) intersectRect(node *layoutNode, point EdgePoint) EdgePoint
 	}
 
 	return EdgePoint{X: cx + sx, Y: cy + sy}
+}
+
+// restoreSelfLoops generates curved paths for self-referential edges.
+// Self-loops are rendered as a curved path that exits the right side of
+// the node, goes up and around, and re-enters from the right.
+func (s *layoutState) restoreSelfLoops() {
+	for _, edge := range s.selfLoops {
+		node := s.nodes[edge.key.from]
+		if node == nil {
+			continue
+		}
+
+		// Calculate loop dimensions based on node size and separation
+		loopOffset := s.opts.NodeSep * 0.75
+		loopHeight := node.height * 0.5
+
+		// Node center and bounds
+		cx := node.x + node.width/2
+		cy := node.y + node.height/2
+		right := node.x + node.width
+		top := node.y
+
+		// Generate a 5-point curved path:
+		// 1. Exit point (right side of node, upper half)
+		// 2. Control point out (to the right)
+		// 3. Top of loop (above node)
+		// 4. Control point back (to the right)
+		// 5. Entry point (right side of node, lower half)
+		edge.points = []EdgePoint{
+			{X: right, Y: cy - loopHeight/3},            // Exit upper right
+			{X: right + loopOffset, Y: cy - loopHeight}, // Control right-up
+			{X: cx, Y: top - loopOffset},                // Top of loop
+			{X: right + loopOffset, Y: cy + loopHeight}, // Control right-down
+			{X: right, Y: cy + loopHeight/3},            // Entry lower right
+		}
+
+		// Add back to edges map
+		s.edges[edge.key] = edge
+	}
 }

@@ -1,6 +1,49 @@
-// Package posit provides pure Go implementation of the Sugiyama algorithm
+// Package posit provides a pure Go implementation of the Sugiyama algorithm
 // for layered graph layout. It computes X/Y positions for nodes in directed
 // graphs, arranging them in hierarchical layers with minimal edge crossings.
+//
+// # Features
+//
+//   - Zero external dependencies (standard library only)
+//   - Deterministic output (same input always produces same output)
+//   - Support for edge labels with automatic positioning
+//   - Multiple ranking algorithms (LongestPath, TightTree, NetworkSimplex)
+//   - Multiple cycle removal algorithms (DFS, Greedy FAS)
+//   - Four layout directions (TopToBottom, LeftToRight, BottomToTop, RightToLeft)
+//   - Self-loop support with curved path rendering
+//
+// # Basic Usage
+//
+//	g := posit.NewGraph()
+//	g.AddNode("A", posit.NodeOptions{Width: 100, Height: 50})
+//	g.AddNode("B", posit.NodeOptions{Width: 100, Height: 50})
+//	g.MustAddEdge("A", "B")
+//
+//	layout := g.Layout()
+//	fmt.Printf("Node A: %+v\n", layout.Nodes["A"])
+//	fmt.Printf("Edge A->B: %+v\n", layout.Edges["A->B"])
+//
+// # Coordinate System
+//
+// Coordinates use a top-left origin with Y increasing downward (standard
+// screen coordinates). Node positions (X, Y) represent the top-left corner
+// of the node. To get the center, add Width/2 and Height/2.
+//
+// # Algorithm Complexity
+//
+//   - LongestPath ranking: O(V + E)
+//   - TightTree ranking: O(V * E)
+//   - NetworkSimplex ranking: O(V * E) typical, O(V^2 * E) worst case
+//   - Crossing minimization: O(iterations * V * E)
+//   - Coordinate assignment (Brandes-Köpf): O(V + E)
+//
+// Target performance: < 10ms for 50 nodes, < 100ms for 200 nodes.
+//
+// # Limitations
+//
+//   - Compound graphs (nested subgraphs/clusters) are not supported
+//   - Type-2 conflict detection in coordinate assignment is not implemented
+//   - Maximum recommended graph size is ~1000 nodes for interactive use
 package posit
 
 import (
@@ -26,6 +69,21 @@ const (
 	LongestPath RankAlgorithm = iota
 	// NetworkSimplex produces optimal results but is more complex.
 	NetworkSimplex
+	// TightTree uses longest-path followed by tight tree construction
+	// (faster than NetworkSimplex but better than LongestPath).
+	TightTree
+)
+
+// Acyclicer specifies which algorithm to use for cycle removal.
+type Acyclicer int
+
+const (
+	// DFSAcyclicer uses DFS-based back edge detection (default).
+	DFSAcyclicer Acyclicer = iota
+	// GreedyAcyclicer uses the Eades/Lin/Smyth greedy heuristic for
+	// weighted feedback arc sets. Produces better results for graphs
+	// with edge weights.
+	GreedyAcyclicer
 )
 
 // Options configures the layout algorithm.
@@ -41,6 +99,9 @@ type Options struct {
 
 	// Algorithm for layer assignment (default: LongestPath)
 	Algorithm RankAlgorithm
+
+	// Acyclicer for cycle removal (default: DFSAcyclicer)
+	Acyclicer Acyclicer
 }
 
 // DefaultOptions returns sensible defaults for layout.
@@ -57,6 +118,28 @@ func DefaultOptions() Options {
 type NodeOptions struct {
 	Width  float64
 	Height float64
+}
+
+// LabelPosition specifies where an edge label is positioned along the edge.
+type LabelPosition string
+
+const (
+	// LabelCenter positions the label at the center of the edge (default)
+	LabelCenter LabelPosition = "c"
+	// LabelLeft positions the label toward the source node
+	LabelLeft LabelPosition = "l"
+	// LabelRight positions the label toward the target node
+	LabelRight LabelPosition = "r"
+)
+
+// EdgeOptions specifies options for an edge including optional label dimensions.
+type EdgeOptions struct {
+	// LabelWidth is the width of the edge label (0 for no label)
+	LabelWidth float64
+	// LabelHeight is the height of the edge label (0 for no label)
+	LabelHeight float64
+	// LabelPosition specifies where to position the label along the edge
+	LabelPosition LabelPosition
 }
 
 // Position represents computed X/Y coordinates.
@@ -78,9 +161,24 @@ type EdgePoint struct {
 	Y float64
 }
 
+// LabelLayout contains the computed position for an edge label.
+type LabelLayout struct {
+	X      float64
+	Y      float64
+	Width  float64
+	Height float64
+}
+
 // EdgeLayout contains the routed path for an edge.
 type EdgeLayout struct {
+	// From is the source node ID
+	From string
+	// To is the target node ID
+	To string
+	// Points is the path from source to target
 	Points []EdgePoint
+	// Label contains the computed label position, if the edge has a label
+	Label *LabelLayout
 }
 
 // Layout contains the computed positions for all nodes and edges.
@@ -89,10 +187,23 @@ type Layout struct {
 	Edges map[string]EdgeLayout
 }
 
+// Edge returns the layout for an edge by its source and target node IDs.
+// This method provides unambiguous edge lookup regardless of node ID contents.
+// Returns the EdgeLayout and true if found, or zero value and false if not.
+func (l *Layout) Edge(from, to string) (EdgeLayout, bool) {
+	for _, e := range l.Edges {
+		if e.From == from && e.To == to {
+			return e, true
+		}
+	}
+	return EdgeLayout{}, false
+}
+
 // Graph represents a directed graph to be laid out.
 type Graph struct {
-	nodes map[string]*node
-	edges []*edge
+	nodes   map[string]*node
+	edges   []*edge
+	edgeSet map[[2]string]bool // for O(1) edge lookup
 }
 
 type node struct {
@@ -102,15 +213,19 @@ type node struct {
 }
 
 type edge struct {
-	from string
-	to   string
+	from        string
+	to          string
+	labelWidth  float64
+	labelHeight float64
+	labelPos    LabelPosition
 }
 
 // NewGraph creates a new empty graph.
 func NewGraph() *Graph {
 	return &Graph{
-		nodes: make(map[string]*node),
-		edges: make([]*edge, 0),
+		nodes:   make(map[string]*node),
+		edges:   make([]*edge, 0),
+		edgeSet: make(map[[2]string]bool),
 	}
 }
 
@@ -132,20 +247,29 @@ func (g *Graph) HasNode(id string) bool {
 
 // AddEdge adds a directed edge from source to target.
 // Returns an error if either node does not exist.
-func (g *Graph) AddEdge(from, to string) error {
+// Optional EdgeOptions can be provided to specify label dimensions.
+func (g *Graph) AddEdge(from, to string, opts ...EdgeOptions) error {
 	if _, ok := g.nodes[from]; !ok {
 		return fmt.Errorf("posit: source node %q does not exist", from)
 	}
 	if _, ok := g.nodes[to]; !ok {
 		return fmt.Errorf("posit: target node %q does not exist", to)
 	}
-	g.edges = append(g.edges, &edge{from: from, to: to})
+	e := &edge{from: from, to: to}
+	if len(opts) > 0 {
+		e.labelWidth = opts[0].LabelWidth
+		e.labelHeight = opts[0].LabelHeight
+		e.labelPos = opts[0].LabelPosition
+	}
+	g.edges = append(g.edges, e)
+	g.edgeSet[[2]string{from, to}] = true
 	return nil
 }
 
 // MustAddEdge adds an edge or panics if nodes don't exist.
-func (g *Graph) MustAddEdge(from, to string) {
-	if err := g.AddEdge(from, to); err != nil {
+// Optional EdgeOptions can be provided to specify label dimensions.
+func (g *Graph) MustAddEdge(from, to string, opts ...EdgeOptions) {
+	if err := g.AddEdge(from, to, opts...); err != nil {
 		panic(err)
 	}
 }
@@ -180,13 +304,9 @@ func (g *Graph) Edges() [][2]string {
 }
 
 // HasEdge returns true if an edge from source to target exists.
+// This is an O(1) operation.
 func (g *Graph) HasEdge(from, to string) bool {
-	for _, e := range g.edges {
-		if e.from == from && e.to == to {
-			return true
-		}
-	}
-	return false
+	return g.edgeSet[[2]string{from, to}]
 }
 
 // Node returns the dimensions of a node, or false if not found.
@@ -199,10 +319,31 @@ func (g *Graph) Node(id string) (NodeOptions, bool) {
 }
 
 // Layout computes positions for all nodes and edges.
+// For error handling, use LayoutWithError instead.
 func (g *Graph) Layout(opts ...Options) *Layout {
+	layout, _ := g.LayoutWithError(opts...)
+	return layout
+}
+
+// LayoutWithError computes positions for all nodes and edges,
+// returning an error if options are invalid.
+func (g *Graph) LayoutWithError(opts ...Options) (*Layout, error) {
 	opt := DefaultOptions()
 	if len(opts) > 0 {
 		opt = opts[0]
+	}
+
+	// Validate options
+	if err := opt.Validate(); err != nil {
+		return nil, err
+	}
+
+	// Handle empty graph
+	if len(g.nodes) == 0 {
+		return &Layout{
+			Nodes: make(map[string]NodeLayout),
+			Edges: make(map[string]EdgeLayout),
+		}, nil
 	}
 
 	// Create internal layout state
@@ -232,5 +373,25 @@ func (g *Graph) Layout(opts ...Options) *Layout {
 	// Post-transform for direction (convert coordinates)
 	state.undoDirectionAdjustment()
 
-	return state.buildLayout()
+	return state.buildLayout(), nil
+}
+
+// Validate checks that the options are valid.
+func (o Options) Validate() error {
+	if o.NodeSep < 0 {
+		return fmt.Errorf("posit: NodeSep cannot be negative (got %v)", o.NodeSep)
+	}
+	if o.RankSep < 0 {
+		return fmt.Errorf("posit: RankSep cannot be negative (got %v)", o.RankSep)
+	}
+	if o.Direction < TopToBottom || o.Direction > RightToLeft {
+		return fmt.Errorf("posit: invalid Direction value %d", o.Direction)
+	}
+	if o.Algorithm < LongestPath || o.Algorithm > TightTree {
+		return fmt.Errorf("posit: invalid Algorithm value %d", o.Algorithm)
+	}
+	if o.Acyclicer < DFSAcyclicer || o.Acyclicer > GreedyAcyclicer {
+		return fmt.Errorf("posit: invalid Acyclicer value %d", o.Acyclicer)
+	}
+	return nil
 }

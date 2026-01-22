@@ -46,20 +46,46 @@ func (s *layoutState) normalizeEdge(key edgeKey) int {
 		return 0 // Shouldn't happen with valid ranks
 	}
 
+	// Determine which rank should have the label dummy (if edge has label)
+	labelRank := -1
+	if edge.labelWidth > 0 || edge.labelHeight > 0 {
+		// Determine label position based on labelPos
+		switch edge.labelPos {
+		case LabelLeft:
+			labelRank = vRank + 1 // Near source
+		case LabelRight:
+			labelRank = wRank - 1 // Near target
+		default: // LabelCenter or empty
+			labelRank = vRank + (wRank-vRank)/2 // Middle
+		}
+	}
+
 	// Remove original edge
 	s.removeEdge(key)
 
 	// Create chain of dummy nodes
 	v := key.from
 	var firstDummy string
+	var labelDummyID string
 
 	for rank := vRank + 1; rank < wRank; rank++ {
 		// Create dummy node
 		dummyID := s.newDummyID()
+
+		// Determine dummy size - label dummy gets label dimensions
+		dummyWidth := 0.0
+		dummyHeight := 0.0
+		isLabelDummy := rank == labelRank
+		if isLabelDummy {
+			dummyWidth = edge.labelWidth
+			dummyHeight = edge.labelHeight
+			labelDummyID = dummyID
+		}
+
 		dummy := &layoutNode{
 			id:        dummyID,
-			width:     0,
-			height:    0,
+			width:     dummyWidth,
+			height:    dummyHeight,
 			rank:      rank,
 			order:     -1, // Will be set in Phase 4
 			isDummy:   true,
@@ -89,6 +115,11 @@ func (s *layoutState) normalizeEdge(key edgeKey) int {
 	// Track dummy chain for reconstruction
 	if firstDummy != "" {
 		s.dummyChains = append(s.dummyChains, firstDummy)
+	}
+
+	// Track label dummy for position extraction later
+	if labelDummyID != "" {
+		edge.labelDummyID = labelDummyID
 	}
 
 	return dummyCount

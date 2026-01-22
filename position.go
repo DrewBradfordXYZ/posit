@@ -499,35 +499,66 @@ func (s *layoutState) separation(leftID, rightID string) float64 {
 	return left.width/2 + sep + right.width/2
 }
 
-// alignCoordinatesToSmallest aligns all four coordinate sets to have the same min.
+// alignCoordinatesToSmallest finds the alignment with smallest width and
+// aligns all others to it. This follows dagre's algorithm which computes
+// actual width (max - min considering node widths) for each alignment.
 func (s *layoutState) alignCoordinatesToSmallest(xss map[string]map[string]float64) {
-	// Find minimum X for each alignment
 	alignments := []string{"ul", "ur", "dl", "dr"}
-	mins := make(map[string]float64)
+
+	// Compute min, max, and width for each alignment
+	type alignmentMetrics struct {
+		minX  float64
+		maxX  float64
+		width float64
+	}
+	metrics := make(map[string]alignmentMetrics)
 
 	for _, align := range alignments {
 		xs := xss[align]
 		minX := math.Inf(1)
-		for _, x := range xs {
-			if x < minX {
-				minX = x
+		maxX := math.Inf(-1)
+
+		for id, x := range xs {
+			node := s.nodes[id]
+			if node == nil {
+				continue
+			}
+			// Consider node width when computing bounds
+			left := x - node.width/2
+			right := x + node.width/2
+
+			if left < minX {
+				minX = left
+			}
+			if right > maxX {
+				maxX = right
 			}
 		}
-		mins[align] = minX
-	}
 
-	// Find overall minimum
-	globalMin := math.Inf(1)
-	for _, min := range mins {
-		if min < globalMin {
-			globalMin = min
+		metrics[align] = alignmentMetrics{
+			minX:  minX,
+			maxX:  maxX,
+			width: maxX - minX,
 		}
 	}
 
-	// Shift each alignment so its minimum equals the global minimum
+	// Find alignment with smallest width
+	smallestAlign := alignments[0]
+	smallestWidth := metrics[smallestAlign].width
+	for _, align := range alignments[1:] {
+		if metrics[align].width < smallestWidth {
+			smallestWidth = metrics[align].width
+			smallestAlign = align
+		}
+	}
+
+	// Get the bounds of the smallest alignment
+	smallestMin := metrics[smallestAlign].minX
+
+	// Shift each alignment so its minimum matches the smallest alignment's minimum
 	for _, align := range alignments {
 		xs := xss[align]
-		shift := globalMin - mins[align]
+		shift := smallestMin - metrics[align].minX
 		for id := range xs {
 			xs[id] += shift
 		}

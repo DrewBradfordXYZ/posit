@@ -7,6 +7,8 @@ func (s *layoutState) assignLayers() {
 	switch s.opts.Algorithm {
 	case NetworkSimplex:
 		s.assignLayersNetworkSimplex()
+	case TightTree:
+		s.assignLayersTightTree()
 	default:
 		s.assignLayersLongestPath()
 	}
@@ -16,6 +18,26 @@ func (s *layoutState) assignLayers() {
 
 	// Build layers array
 	s.buildLayers()
+}
+
+// assignLayersTightTree uses longest-path followed by tight tree construction.
+// This is a middle-ground between longest-path (fast but suboptimal) and
+// network simplex (optimal but slower). It produces tighter ranks without
+// the full optimization loop of network simplex.
+func (s *layoutState) assignLayersTightTree() {
+	if len(s.nodes) == 0 {
+		return
+	}
+
+	// Step 1: Initial feasible ranking using longest path
+	s.assignLayersLongestPath()
+
+	// Step 2: Build feasible spanning tree (this tightens edges)
+	// The feasibleTree function already adjusts ranks to make edges tight
+	_ = s.feasibleTree()
+
+	// Note: Unlike NetworkSimplex, we don't run the pivot loop.
+	// This is faster but may not produce the optimal result.
 }
 
 // assignLayersLongestPath implements the fast longest-path ranking.

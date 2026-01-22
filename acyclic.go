@@ -1,9 +1,21 @@
 package posit
 
+import "sort"
+
 // makeAcyclic reverses edges to break cycles in the graph.
-// It uses DFS to find back edges (edges pointing to ancestors in the DFS tree)
-// and reverses them to create a DAG.
+// Dispatches to the appropriate algorithm based on options.
 func (s *layoutState) makeAcyclic() {
+	switch s.opts.Acyclicer {
+	case GreedyAcyclicer:
+		s.makeAcyclicGreedy()
+	default:
+		s.makeAcyclicDFS()
+	}
+}
+
+// makeAcyclicDFS uses DFS to find back edges (edges pointing to ancestors
+// in the DFS tree) and reverses them to create a DAG.
+func (s *layoutState) makeAcyclicDFS() {
 	// Handle self-loops first
 	s.removeSelfLoops()
 
@@ -20,9 +32,10 @@ func (s *layoutState) makeAcyclic() {
 		visited[v] = true
 		onStack[v] = true
 
-		// Iterate over copy to allow modification during iteration
+		// Iterate over sorted copy to ensure deterministic behavior
 		successors := make([]string, len(s.successors[v]))
 		copy(successors, s.successors[v])
+		sort.Strings(successors)
 
 		for _, w := range successors {
 			if onStack[w] {
@@ -38,19 +51,30 @@ func (s *layoutState) makeAcyclic() {
 		delete(onStack, v)
 	}
 
-	// Start DFS from all nodes (handles disconnected components)
+	// Start DFS from all nodes in sorted order (handles disconnected components)
+	nodeIDs := make([]string, 0, len(s.nodes))
 	for id := range s.nodes {
+		nodeIDs = append(nodeIDs, id)
+	}
+	sort.Strings(nodeIDs)
+
+	for _, id := range nodeIDs {
 		dfs(id)
 	}
 
 	s.reversedEdges = reversed
 }
 
-// removeSelfLoops removes edges where source equals target.
-// Self-loops are always cycles and cannot be laid out meaningfully.
+// removeSelfLoops extracts edges where source equals target.
+// Self-loops are tracked separately and rendered as curved paths later.
 func (s *layoutState) removeSelfLoops() {
 	for key := range s.edges {
 		if key.from == key.to {
+			// Save the self-loop for later rendering
+			edge := s.edges[key]
+			if edge != nil {
+				s.selfLoops = append(s.selfLoops, edge)
+			}
 			s.removeEdge(key)
 		}
 	}

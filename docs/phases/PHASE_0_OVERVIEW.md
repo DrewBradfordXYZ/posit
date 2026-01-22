@@ -22,7 +22,7 @@ This document provides an overview of the Sugiyama algorithm execution phases as
 | 2. Layer Assignment | ✅ Complete | `rank.go` | 11 tests |
 | 3. Dummy Nodes | ✅ Complete | `normalize.go` | 15 tests |
 | 4. Crossing Minimization | ✅ Complete | `order.go` | 13 tests |
-| 5. Coordinate Assignment | ⏳ Stub | `stubs.go` | - |
+| 5. Coordinate Assignment | ✅ Complete | `position.go` | 17 tests |
 | 6. Edge Routing | ⏳ Stub | `stubs.go` | - |
 
 **Foundation:** `state.go` contains `layoutState`, `layoutNode`, `layoutEdge`, and `edgeKey` types.
@@ -335,5 +335,5 @@ Continue to the individual phase documents for detailed implementation guidance:
 2. ✅ [Phase 2: Layer Assignment](./PHASE_2_LAYER_ASSIGNMENT.md) — Complete
 3. ✅ [Phase 3: Dummy Nodes](./PHASE_3_DUMMY_NODES.md) — Complete
 4. ✅ [Phase 4: Crossing Minimization](./PHASE_4_CROSSING_MINIMIZATION.md) — Complete
-5. [Phase 5: Coordinate Assignment](./PHASE_5_COORDINATE_ASSIGNMENT.md) — **Next**
-6. [Phase 6: Edge Routing](./PHASE_6_EDGE_ROUTING.md)
+5. ✅ [Phase 5: Coordinate Assignment](./PHASE_5_COORDINATE_ASSIGNMENT.md) — Complete
+6. [Phase 6: Edge Routing](./PHASE_6_EDGE_ROUTING.md) — **Next**

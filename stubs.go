@@ -1,24 +1,7 @@
 package posit
 
-// Stub implementations for phases 5-6.
+// Stub implementations for Phase 6.
 // These will be replaced with full implementations in later phases.
-
-// assignCoordinates computes X/Y positions for all nodes (Phase 5).
-// Stub: simple grid layout.
-func (s *layoutState) assignCoordinates() {
-	y := 0.0
-	for rank, layer := range s.layers {
-		x := 0.0
-		_ = rank
-		for _, nodeID := range layer {
-			node := s.nodes[nodeID]
-			node.x = x
-			node.y = y
-			x += node.width + s.opts.NodeSep
-		}
-		y += s.opts.RankSep
-	}
-}
 
 // routeEdges generates edge paths and restores reversed edges (Phase 6).
 // Stub: straight lines between node centers.

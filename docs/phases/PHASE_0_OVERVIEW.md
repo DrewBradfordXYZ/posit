@@ -24,6 +24,7 @@ This document provides an overview of the Sugiyama algorithm execution phases as
 | 4. Crossing Minimization | ✅ Complete | `order.go` | 13 tests |
 | 5. Coordinate Assignment | ✅ Complete | `position.go` | 17 tests |
 | 6. Edge Routing | ✅ Complete | `route.go` | 13 tests |
+| 7. Enhancements | ⏳ Planned | `posit.go`, `direction.go` | - |
 
 **Foundation:** `state.go` contains `layoutState`, `layoutNode`, `layoutEdge`, and `edgeKey` types.
 
@@ -337,3 +338,4 @@ Continue to the individual phase documents for detailed implementation guidance:
 4. ✅ [Phase 4: Crossing Minimization](./PHASE_4_CROSSING_MINIMIZATION.md) — Complete
 5. ✅ [Phase 5: Coordinate Assignment](./PHASE_5_COORDINATE_ASSIGNMENT.md) — Complete
 6. ✅ [Phase 6: Edge Routing](./PHASE_6_EDGE_ROUTING.md) — Complete
+7. [Phase 7: Enhancements](./PHASE_7_ENHANCEMENTS.md) — **Next** (validation, direction, query API)

@@ -3,6 +3,11 @@
 // graphs, arranging them in hierarchical layers with minimal edge crossings.
 package posit
 
+import (
+	"fmt"
+	"sort"
+)
+
 // Direction specifies the primary direction of the layout.
 type Direction int
 
@@ -119,9 +124,30 @@ func (g *Graph) AddNode(id string, opts NodeOptions) {
 	}
 }
 
+// HasNode returns true if a node with the given ID exists.
+func (g *Graph) HasNode(id string) bool {
+	_, ok := g.nodes[id]
+	return ok
+}
+
 // AddEdge adds a directed edge from source to target.
-func (g *Graph) AddEdge(from, to string) {
+// Returns an error if either node does not exist.
+func (g *Graph) AddEdge(from, to string) error {
+	if _, ok := g.nodes[from]; !ok {
+		return fmt.Errorf("posit: source node %q does not exist", from)
+	}
+	if _, ok := g.nodes[to]; !ok {
+		return fmt.Errorf("posit: target node %q does not exist", to)
+	}
 	g.edges = append(g.edges, &edge{from: from, to: to})
+	return nil
+}
+
+// MustAddEdge adds an edge or panics if nodes don't exist.
+func (g *Graph) MustAddEdge(from, to string) {
+	if err := g.AddEdge(from, to); err != nil {
+		panic(err)
+	}
 }
 
 // NodeCount returns the number of nodes in the graph.
@@ -134,6 +160,44 @@ func (g *Graph) EdgeCount() int {
 	return len(g.edges)
 }
 
+// Nodes returns a slice of all node IDs in sorted order.
+func (g *Graph) Nodes() []string {
+	ids := make([]string, 0, len(g.nodes))
+	for id := range g.nodes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// Edges returns a slice of all edges as [from, to] pairs.
+func (g *Graph) Edges() [][2]string {
+	result := make([][2]string, len(g.edges))
+	for i, e := range g.edges {
+		result[i] = [2]string{e.from, e.to}
+	}
+	return result
+}
+
+// HasEdge returns true if an edge from source to target exists.
+func (g *Graph) HasEdge(from, to string) bool {
+	for _, e := range g.edges {
+		if e.from == from && e.to == to {
+			return true
+		}
+	}
+	return false
+}
+
+// Node returns the dimensions of a node, or false if not found.
+func (g *Graph) Node(id string) (NodeOptions, bool) {
+	n, ok := g.nodes[id]
+	if !ok {
+		return NodeOptions{}, false
+	}
+	return NodeOptions{Width: n.width, Height: n.height}, true
+}
+
 // Layout computes positions for all nodes and edges.
 func (g *Graph) Layout(opts ...Options) *Layout {
 	opt := DefaultOptions()
@@ -143,6 +207,9 @@ func (g *Graph) Layout(opts ...Options) *Layout {
 
 	// Create internal layout state
 	state := newLayoutState(g, opt)
+
+	// Pre-transform for direction (swap dimensions for LR/RL)
+	state.adjustForDirection()
 
 	// Phase 1: Make acyclic (reverse edges that create cycles)
 	state.makeAcyclic()
@@ -161,6 +228,9 @@ func (g *Graph) Layout(opts ...Options) *Layout {
 
 	// Phase 6: Route edges and restore reversed edges
 	state.routeEdges()
+
+	// Post-transform for direction (convert coordinates)
+	state.undoDirectionAdjustment()
 
 	return state.buildLayout()
 }

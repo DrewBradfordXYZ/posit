@@ -12,8 +12,8 @@ func TestOrder_NoCrossings(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("A", "C")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("A", "C")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -34,8 +34,8 @@ func TestOrder_CrossingsDecrease(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "D") // Cross edge
-	g.AddEdge("B", "C") // Cross edge
+	g.MustAddEdge("A", "D") // Cross edge
+	g.MustAddEdge("B", "C") // Cross edge
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -62,8 +62,8 @@ func TestOrder_Deterministic(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("A", "C")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("A", "C")
 
 	var orders [][]string
 	for i := 0; i < 3; i++ {
@@ -90,9 +90,9 @@ func TestOrder_BarycenterCalculation(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("X", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "X") // A at order 0
-	g.AddEdge("B", "X") // B at order 1
-	g.AddEdge("C", "X") // C at order 2
+	g.MustAddEdge("A", "X") // A at order 0
+	g.MustAddEdge("B", "X") // B at order 1
+	g.MustAddEdge("C", "X") // C at order 2
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -168,7 +168,7 @@ func TestOrder_TwoLayerCrossCount(t *testing.T) {
 				g.AddNode(n, NodeOptions{Width: 100, Height: 50})
 			}
 			for _, e := range tt.edges {
-				g.AddEdge(e[0], e[1])
+				g.MustAddEdge(e[0], e[1])
 			}
 
 			state := newLayoutState(g, DefaultOptions())
@@ -232,8 +232,8 @@ func TestOrder_DisconnectedComponents(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B") // Component 1
-	g.AddEdge("C", "D") // Component 2
+	g.MustAddEdge("A", "B") // Component 1
+	g.MustAddEdge("C", "D") // Component 2
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -256,10 +256,10 @@ func TestOrder_LongChain(t *testing.T) {
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("E", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
-	g.AddEdge("C", "D")
-	g.AddEdge("D", "E")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+	g.MustAddEdge("C", "D")
+	g.MustAddEdge("D", "E")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -285,10 +285,10 @@ func TestOrder_DiamondGraph(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("A", "C")
-	g.AddEdge("B", "D")
-	g.AddEdge("C", "D")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("A", "C")
+	g.MustAddEdge("B", "D")
+	g.MustAddEdge("C", "D")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -307,7 +307,7 @@ func TestOrder_CopyLayers(t *testing.T) {
 	g := NewGraph()
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
+	g.MustAddEdge("A", "B")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -334,8 +334,8 @@ func TestOrder_SweepDown(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("X", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("Y", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "Y") // A connects to Y (crosses if Y is left of X)
-	g.AddEdge("B", "X") // B connects to X
+	g.MustAddEdge("A", "Y") // A connects to Y (crosses if Y is left of X)
+	g.MustAddEdge("B", "X") // B connects to X
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -362,8 +362,8 @@ func TestOrder_SweepUp(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("X", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("Y", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "Y")
-	g.AddEdge("B", "X")
+	g.MustAddEdge("A", "Y")
+	g.MustAddEdge("B", "X")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()

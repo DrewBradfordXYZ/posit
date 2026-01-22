@@ -19,8 +19,8 @@ func TestPosition_NoOverlap(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("A", "C")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("A", "C")
 
 	layout := g.Layout()
 
@@ -47,8 +47,8 @@ func TestPosition_MinimumSpacing(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("A", "C")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("A", "C")
 
 	layout := g.Layout(opts)
 
@@ -86,15 +86,15 @@ func TestPosition_ValidCoordinates(t *testing.T) {
 	for _, id := range nodes {
 		g.AddNode(id, NodeOptions{Width: 80, Height: 40})
 	}
-	g.AddEdge("A", "B")
-	g.AddEdge("A", "C")
-	g.AddEdge("B", "D")
-	g.AddEdge("B", "E")
-	g.AddEdge("C", "F")
-	g.AddEdge("D", "G")
-	g.AddEdge("E", "G")
-	g.AddEdge("F", "H")
-	g.AddEdge("G", "H")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("A", "C")
+	g.MustAddEdge("B", "D")
+	g.MustAddEdge("B", "E")
+	g.MustAddEdge("C", "F")
+	g.MustAddEdge("D", "G")
+	g.MustAddEdge("E", "G")
+	g.MustAddEdge("F", "H")
+	g.MustAddEdge("G", "H")
 
 	layout := g.Layout()
 
@@ -119,8 +119,8 @@ func TestPosition_YCoordinatesFollowRank(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
 
 	layout := g.Layout()
 
@@ -143,10 +143,10 @@ func TestPosition_SameLayerSameY(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("A", "C")
-	g.AddEdge("B", "D")
-	g.AddEdge("C", "D")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("A", "C")
+	g.MustAddEdge("B", "D")
+	g.MustAddEdge("C", "D")
 
 	layout := g.Layout()
 
@@ -165,10 +165,10 @@ func TestPosition_VariableHeights(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 100}) // Taller
 	g.AddNode("C", NodeOptions{Width: 100, Height: 30})  // Shorter
 	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("A", "C")
-	g.AddEdge("B", "D")
-	g.AddEdge("C", "D")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("A", "C")
+	g.MustAddEdge("B", "D")
+	g.MustAddEdge("C", "D")
 
 	opts := Options{RankSep: 50}
 	layout := g.Layout(opts)
@@ -197,8 +197,8 @@ func TestPosition_VariableWidths(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 200, Height: 50}) // Wide
 	g.AddNode("B", NodeOptions{Width: 50, Height: 50})  // Narrow
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50}) // Medium
-	g.AddEdge("A", "B")
-	g.AddEdge("A", "C")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("A", "C")
 
 	opts := Options{NodeSep: 30}
 	layout := g.Layout(opts)
@@ -243,7 +243,7 @@ func TestPosition_TwoNodes(t *testing.T) {
 	g := NewGraph()
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
+	g.MustAddEdge("A", "B")
 
 	layout := g.Layout()
 
@@ -272,10 +272,10 @@ func TestPosition_DiamondGraph(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("A", "C")
-	g.AddEdge("B", "D")
-	g.AddEdge("C", "D")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("A", "C")
+	g.MustAddEdge("B", "D")
+	g.MustAddEdge("C", "D")
 
 	layout := g.Layout()
 
@@ -318,7 +318,7 @@ func TestPosition_WideGraph(t *testing.T) {
 	children := []string{"B", "C", "D", "E", "F"}
 	for _, id := range children {
 		g.AddNode(id, NodeOptions{Width: 100, Height: 50})
-		g.AddEdge("A", id)
+		g.MustAddEdge("A", id)
 	}
 
 	opts := Options{NodeSep: 40}
@@ -353,7 +353,7 @@ func TestPosition_DeepGraph(t *testing.T) {
 		g.AddNode(id, NodeOptions{Width: 100, Height: 50})
 	}
 	for i := 0; i < len(nodes)-1; i++ {
-		g.AddEdge(nodes[i], nodes[i+1])
+		g.MustAddEdge(nodes[i], nodes[i+1])
 	}
 
 	opts := Options{RankSep: 60}
@@ -386,7 +386,7 @@ func TestPosition_LargeGraphUsesSimpleMethod(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		from := string(rune('A'+i%26)) + string(rune('0'+i/26))
 		to := string(rune('A'+(i+1)%26)) + string(rune('0'+(i+1)/26))
-		g.AddEdge(from, to)
+		g.MustAddEdge(from, to)
 	}
 
 	// This should use the simple method and not hang
@@ -412,9 +412,9 @@ func TestPosition_CenteringWorks(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "C")
-	g.AddEdge("C", "B") // B comes from C
-	g.AddEdge("C", "D") // D comes from C
+	g.MustAddEdge("A", "C")
+	g.MustAddEdge("C", "B") // B comes from C
+	g.MustAddEdge("C", "D") // D comes from C
 
 	layout := g.Layout()
 
@@ -485,9 +485,9 @@ func TestPosition_LongEdgeWithDummies(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "D") // Spans multiple layers
-	g.AddEdge("B", "C")
-	g.AddEdge("C", "D")
+	g.MustAddEdge("A", "D") // Spans multiple layers
+	g.MustAddEdge("B", "C")
+	g.MustAddEdge("C", "D")
 
 	layout := g.Layout()
 

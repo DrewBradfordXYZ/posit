@@ -8,8 +8,8 @@ func TestAcyclic_SimpleDAG(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -29,9 +29,9 @@ func TestAcyclic_SingleCycle(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
-	g.AddEdge("C", "A") // Creates cycle
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+	g.MustAddEdge("C", "A") // Creates cycle
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -50,8 +50,8 @@ func TestAcyclic_TwoNodeCycle(t *testing.T) {
 	g := NewGraph()
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "A")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "A")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -71,14 +71,14 @@ func TestAcyclic_MultipleCycles(t *testing.T) {
 	// Cycle 1: A → B → A
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "A")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "A")
 
 	// Cycle 2: X → Y → X
 	g.AddNode("X", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("Y", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("X", "Y")
-	g.AddEdge("Y", "X")
+	g.MustAddEdge("X", "Y")
+	g.MustAddEdge("Y", "X")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -96,7 +96,7 @@ func TestAcyclic_SelfLoop(t *testing.T) {
 	// A → A (self-loop)
 	g := NewGraph()
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "A")
+	g.MustAddEdge("A", "A")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -113,12 +113,12 @@ func TestAcyclic_DisconnectedComponents(t *testing.T) {
 	g := NewGraph()
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
+	g.MustAddEdge("A", "B")
 
 	g.AddNode("X", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("Y", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("X", "Y")
-	g.AddEdge("Y", "X")
+	g.MustAddEdge("X", "Y")
+	g.MustAddEdge("Y", "X")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -146,15 +146,15 @@ func TestAcyclic_ComplexGraph(t *testing.T) {
 	g.AddNode("E", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("F", NodeOptions{Width: 100, Height: 50})
 
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
-	g.AddEdge("A", "D")
-	g.AddEdge("B", "E")
-	g.AddEdge("C", "F")
-	g.AddEdge("E", "D")
-	g.AddEdge("E", "F")
-	g.AddEdge("D", "F") // D → F → (back to something creating cycle)
-	g.AddEdge("F", "A") // Creates cycle: A → B → C → F → A
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+	g.MustAddEdge("A", "D")
+	g.MustAddEdge("B", "E")
+	g.MustAddEdge("C", "F")
+	g.MustAddEdge("E", "D")
+	g.MustAddEdge("E", "F")
+	g.MustAddEdge("D", "F") // D → F → (back to something creating cycle)
+	g.MustAddEdge("F", "A") // Creates cycle: A → B → C → F → A
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -174,8 +174,8 @@ func TestAcyclic_ReversedEdgeMarked(t *testing.T) {
 	g := NewGraph()
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "A")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "A")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -200,9 +200,9 @@ func TestAcyclic_AdjacencyListsConsistent(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
-	g.AddEdge("C", "A")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+	g.MustAddEdge("C", "A")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()

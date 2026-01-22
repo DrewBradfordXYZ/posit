@@ -83,16 +83,29 @@ func newLayoutState(g *Graph, opts Options) *layoutState {
 		s.predecessors[id] = []string{}
 	}
 
-	// Copy edges and build adjacency lists
+	// Copy edges with aggregation and build adjacency lists
+	edgeSeen := make(map[edgeKey]bool)
 	for _, e := range g.edges {
 		key := edgeKey{from: e.from, to: e.to}
+
+		if existing := s.edges[key]; existing != nil {
+			// Aggregate: sum weights for duplicate edges
+			existing.weight += 1
+			continue
+		}
+
 		s.edges[key] = &layoutEdge{
 			key:    key,
 			weight: 1,
 			minlen: 1,
 		}
-		s.successors[e.from] = append(s.successors[e.from], e.to)
-		s.predecessors[e.to] = append(s.predecessors[e.to], e.from)
+
+		// Only add to adjacency lists once
+		if !edgeSeen[key] {
+			s.successors[e.from] = append(s.successors[e.from], e.to)
+			s.predecessors[e.to] = append(s.predecessors[e.to], e.from)
+			edgeSeen[key] = true
+		}
 	}
 
 	return s

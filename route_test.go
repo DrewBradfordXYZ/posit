@@ -12,7 +12,7 @@ func TestRoute_SimpleEdge(t *testing.T) {
 	g := NewGraph()
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
+	g.MustAddEdge("A", "B")
 
 	layout := g.Layout()
 
@@ -49,10 +49,10 @@ func TestRoute_LongEdgeWithDummies(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
-	g.AddEdge("C", "D")
-	g.AddEdge("A", "D") // Long edge
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+	g.MustAddEdge("C", "D")
+	g.MustAddEdge("A", "D") // Long edge
 
 	layout := g.Layout()
 
@@ -82,9 +82,9 @@ func TestRoute_ReversedEdge(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
-	g.AddEdge("C", "A") // Will be reversed
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+	g.MustAddEdge("C", "A") // Will be reversed
 
 	layout := g.Layout()
 
@@ -110,9 +110,9 @@ func TestRoute_NoDummiesInOutput(t *testing.T) {
 		g.AddNode(fmt.Sprintf("N%d", i), NodeOptions{Width: 100, Height: 50})
 	}
 	for i := 0; i < 4; i++ {
-		g.AddEdge(fmt.Sprintf("N%d", i), fmt.Sprintf("N%d", i+1))
+		g.MustAddEdge(fmt.Sprintf("N%d", i), fmt.Sprintf("N%d", i+1))
 	}
-	g.AddEdge("N0", "N4") // Long edge, creates dummies
+	g.MustAddEdge("N0", "N4") // Long edge, creates dummies
 
 	layout := g.Layout()
 
@@ -136,16 +136,16 @@ func TestRoute_EdgePointsValid(t *testing.T) {
 		g.AddNode(fmt.Sprintf("N%d", i), NodeOptions{Width: 100, Height: 50})
 	}
 	// Create various edge patterns
-	g.AddEdge("N0", "N1")
-	g.AddEdge("N0", "N2")
-	g.AddEdge("N1", "N3")
-	g.AddEdge("N2", "N3")
-	g.AddEdge("N3", "N4")
-	g.AddEdge("N0", "N5") // Skip some layers
-	g.AddEdge("N5", "N6")
-	g.AddEdge("N6", "N7")
-	g.AddEdge("N7", "N8")
-	g.AddEdge("N8", "N9")
+	g.MustAddEdge("N0", "N1")
+	g.MustAddEdge("N0", "N2")
+	g.MustAddEdge("N1", "N3")
+	g.MustAddEdge("N2", "N3")
+	g.MustAddEdge("N3", "N4")
+	g.MustAddEdge("N0", "N5") // Skip some layers
+	g.MustAddEdge("N5", "N6")
+	g.MustAddEdge("N6", "N7")
+	g.MustAddEdge("N7", "N8")
+	g.MustAddEdge("N8", "N9")
 
 	layout := g.Layout()
 
@@ -168,9 +168,9 @@ func TestRoute_AllEdgesHavePoints(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
-	g.AddEdge("A", "C") // Long edge
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+	g.MustAddEdge("A", "C") // Long edge
 
 	layout := g.Layout()
 
@@ -188,7 +188,7 @@ func TestRoute_BoundaryIntersections(t *testing.T) {
 	g := NewGraph()
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
+	g.MustAddEdge("A", "B")
 
 	layout := g.Layout()
 
@@ -331,10 +331,10 @@ func TestRoute_MultiLayerLongEdge(t *testing.T) {
 	}
 	// Create chain
 	for i := 0; i < 5; i++ {
-		g.AddEdge(fmt.Sprintf("N%d", i), fmt.Sprintf("N%d", i+1))
+		g.MustAddEdge(fmt.Sprintf("N%d", i), fmt.Sprintf("N%d", i+1))
 	}
 	// Add long edge spanning 5 layers
-	g.AddEdge("N0", "N5")
+	g.MustAddEdge("N0", "N5")
 
 	layout := g.Layout()
 
@@ -353,7 +353,7 @@ func TestRoute_EdgeDirection(t *testing.T) {
 	g := NewGraph()
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
+	g.MustAddEdge("A", "B")
 
 	layout := g.Layout()
 

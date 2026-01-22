@@ -11,8 +11,8 @@ func TestNormalize_NoLongEdges(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -34,9 +34,9 @@ func TestNormalize_SingleLongEdge(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
-	g.AddEdge("A", "C") // Long edge spans 2 layers
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+	g.MustAddEdge("A", "C") // Long edge spans 2 layers
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -57,9 +57,9 @@ func TestNormalize_VeryLongEdge(t *testing.T) {
 		g.AddNode(fmt.Sprintf("N%d", i), NodeOptions{Width: 100, Height: 50})
 	}
 	for i := 0; i < 4; i++ {
-		g.AddEdge(fmt.Sprintf("N%d", i), fmt.Sprintf("N%d", i+1))
+		g.MustAddEdge(fmt.Sprintf("N%d", i), fmt.Sprintf("N%d", i+1))
 	}
-	g.AddEdge("N0", "N4") // Long edge spans 4 layers
+	g.MustAddEdge("N0", "N4") // Long edge spans 4 layers
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -79,9 +79,9 @@ func TestNormalize_DummyConnections(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
-	g.AddEdge("A", "C") // Creates 1 dummy
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+	g.MustAddEdge("A", "C") // Creates 1 dummy
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -112,10 +112,10 @@ func TestNormalize_DummyInCorrectLayer(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
-	g.AddEdge("C", "D")
-	g.AddEdge("A", "D") // Spans 3 layers, needs 2 dummies
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+	g.MustAddEdge("C", "D")
+	g.MustAddEdge("A", "D") // Spans 3 layers, needs 2 dummies
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -149,9 +149,9 @@ func TestNormalize_DummyProperties(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
-	g.AddEdge("A", "C")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+	g.MustAddEdge("A", "C")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -185,9 +185,9 @@ func TestNormalize_DummyChainTracking(t *testing.T) {
 		g.AddNode(fmt.Sprintf("N%d", i), NodeOptions{Width: 100, Height: 50})
 	}
 	for i := 0; i < 4; i++ {
-		g.AddEdge(fmt.Sprintf("N%d", i), fmt.Sprintf("N%d", i+1))
+		g.MustAddEdge(fmt.Sprintf("N%d", i), fmt.Sprintf("N%d", i+1))
 	}
-	g.AddEdge("N0", "N4") // Creates a chain of 3 dummies
+	g.MustAddEdge("N0", "N4") // Creates a chain of 3 dummies
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -229,11 +229,11 @@ func TestNormalize_AllEdgesSpanOneLayer(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
-	g.AddEdge("C", "D")
-	g.AddEdge("A", "C") // Span 2
-	g.AddEdge("A", "D") // Span 3
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+	g.MustAddEdge("C", "D")
+	g.MustAddEdge("A", "C") // Span 2
+	g.MustAddEdge("A", "D") // Span 3
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -259,12 +259,12 @@ func TestNormalize_MultipleLongEdges(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
-	g.AddEdge("C", "D")
-	g.AddEdge("A", "C") // Span 2, needs 1 dummy
-	g.AddEdge("A", "D") // Span 3, needs 2 dummies
-	g.AddEdge("B", "D") // Span 2, needs 1 dummy
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+	g.MustAddEdge("C", "D")
+	g.MustAddEdge("A", "C") // Span 2, needs 1 dummy
+	g.MustAddEdge("A", "D") // Span 3, needs 2 dummies
+	g.MustAddEdge("B", "D") // Span 2, needs 1 dummy
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -313,7 +313,7 @@ func TestNormalize_TwoNodesOneEdge(t *testing.T) {
 	g := NewGraph()
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
+	g.MustAddEdge("A", "B")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -332,9 +332,9 @@ func TestNormalize_OriginalEdgeCount(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B") // Short edge
-	g.AddEdge("B", "C") // Short edge
-	g.AddEdge("A", "C") // Long edge, becomes 2 edges
+	g.MustAddEdge("A", "B") // Short edge
+	g.MustAddEdge("B", "C") // Short edge
+	g.MustAddEdge("A", "C") // Long edge, becomes 2 edges
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -353,9 +353,9 @@ func TestNormalize_EdgeLabelPreserved(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
-	g.AddEdge("A", "C")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+	g.MustAddEdge("A", "C")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -388,11 +388,11 @@ func TestNormalize_DummyUniqueIDs(t *testing.T) {
 	}
 	// Create many long edges
 	for i := 0; i < 5; i++ {
-		g.AddEdge(fmt.Sprintf("N%d", i), fmt.Sprintf("N%d", i+1))
+		g.MustAddEdge(fmt.Sprintf("N%d", i), fmt.Sprintf("N%d", i+1))
 	}
-	g.AddEdge("N0", "N5")  // Span 5
-	g.AddEdge("N0", "N9")  // Span 9
-	g.AddEdge("N1", "N8")  // Span 7
+	g.MustAddEdge("N0", "N5")  // Span 5
+	g.MustAddEdge("N0", "N9")  // Span 9
+	g.MustAddEdge("N1", "N8")  // Span 7
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()

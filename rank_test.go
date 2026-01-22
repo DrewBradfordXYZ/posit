@@ -11,8 +11,8 @@ func TestRank_LinearChain(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -36,10 +36,10 @@ func TestRank_Diamond(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("A", "C")
-	g.AddEdge("B", "D")
-	g.AddEdge("C", "D")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("A", "C")
+	g.MustAddEdge("B", "D")
+	g.MustAddEdge("C", "D")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -65,11 +65,11 @@ func TestRank_DisconnectedComponents(t *testing.T) {
 	// Chain 1
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
+	g.MustAddEdge("A", "B")
 	// Chain 2
 	g.AddNode("X", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("Y", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("X", "Y")
+	g.MustAddEdge("X", "Y")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -126,10 +126,10 @@ func TestRank_LayersStructure(t *testing.T) {
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("A", "C")
-	g.AddEdge("B", "D")
-	g.AddEdge("C", "D")
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("A", "C")
+	g.MustAddEdge("B", "D")
+	g.MustAddEdge("C", "D")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -188,8 +188,8 @@ func TestRank_WideGraph(t *testing.T) {
 	middleNodes := []string{"B", "C", "D", "E", "F"}
 	for _, id := range middleNodes {
 		g.AddNode(id, NodeOptions{Width: 100, Height: 50})
-		g.AddEdge("A", id)
-		g.AddEdge(id, "G")
+		g.MustAddEdge("A", id)
+		g.MustAddEdge(id, "G")
 	}
 
 	state := newLayoutState(g, DefaultOptions())
@@ -223,7 +223,7 @@ func TestRank_LongChain(t *testing.T) {
 		g.AddNode(id, NodeOptions{Width: 100, Height: 50})
 	}
 	for i := 0; i < len(nodes)-1; i++ {
-		g.AddEdge(nodes[i], nodes[i+1])
+		g.MustAddEdge(nodes[i], nodes[i+1])
 	}
 
 	state := newLayoutState(g, DefaultOptions())
@@ -244,8 +244,8 @@ func TestRank_MultipleRoots(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "C")
-	g.AddEdge("B", "C")
+	g.MustAddEdge("A", "C")
+	g.MustAddEdge("B", "C")
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -270,9 +270,9 @@ func TestRank_AfterCycleRemoval(t *testing.T) {
 	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
 	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
-	g.AddEdge("A", "B")
-	g.AddEdge("B", "C")
-	g.AddEdge("C", "A") // Creates cycle
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+	g.MustAddEdge("C", "A") // Creates cycle
 
 	state := newLayoutState(g, DefaultOptions())
 	state.makeAcyclic()
@@ -337,7 +337,7 @@ func buildRandomDAG(numNodes, numEdges int) *Graph {
 				}
 			}
 			if !exists {
-				g.AddEdge(from, to)
+				g.MustAddEdge(from, to)
 				edgeCount++
 			}
 		}

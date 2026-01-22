@@ -1,10 +1,14 @@
 # Phase 8: Network Simplex Ranking
 
-**Files:** `rank.go`, `simplex.go` (new)
+**Status:** ✅ Complete
+
+**Files:** `rank.go`, `simplex.go`, `simplex_test.go`
 
 ## Table of Contents
 
 - [Goal](#goal)
+- [Implementation Status](#implementation-status)
+- [Known Issues](#known-issues)
 - [Why Network Simplex](#why-network-simplex)
 - [Algorithm Overview](#algorithm-overview)
 - [Key Data Structures](#key-data-structures)
@@ -25,31 +29,25 @@
 
 Implement the **network simplex algorithm** for optimal layer assignment. This minimizes total edge length, producing tighter, more balanced layouts than the current longest-path algorithm.
 
-### Current State
+## Implementation Status
+
+✅ **Completed:**
+- Basic network simplex algorithm structure
+- Spanning tree construction (`feasibleTree`)
+- Low/Lim value computation for O(1) descendant queries
+- Cut value computation with child tree edge propagation
+- Pivot operations (leave/enter/exchange edges) with proper direction filtering
+- Validation with fallback to longest-path for safety
+- Comprehensive test suite
 
 ```go
 // rank.go - Current implementation
 func (s *layoutState) assignLayers() {
     switch s.opts.Algorithm {
     case NetworkSimplex:
-        // TODO: implement network simplex for optimal ranking
-        // For now, fall back to longest path
-        s.assignLayersLongestPath()
+        s.assignLayersNetworkSimplex()  // ✅ Implemented
     default:
         s.assignLayersLongestPath()
-    }
-}
-```
-
-### Target State
-
-```go
-func (s *layoutState) assignLayers() {
-    switch s.opts.Algorithm {
-    case NetworkSimplex:
-        s.assignLayersNetworkSimplex()  // Optimal ranking
-    default:
-        s.assignLayersLongestPath()      // Fast ranking
     }
 }
 ```
@@ -840,15 +838,24 @@ After Phase 8, posit will achieve **~95% feature parity** with dagre.
 
 ## Implementation Order
 
-| Step | Task | Depends On |
-|------|------|------------|
-| 1 | Create `simplex.go` with `spanningTree` type | - |
-| 2 | Implement `feasibleTree()` | Step 1 |
-| 3 | Implement `initLowLimValues()` | Step 1 |
-| 4 | Implement `initCutValues()` | Steps 2, 3 |
-| 5 | Implement `leaveEdge()`, `enterEdge()` | Step 4 |
-| 6 | Implement `exchangeEdges()` | Steps 4, 5 |
-| 7 | Wire up `assignLayersNetworkSimplex()` | All above |
-| 8 | Add tests | Step 7 |
+| Step | Task | Status |
+|------|------|--------|
+| 1 | Create `simplex.go` with `spanningTree` type | ✅ Done |
+| 2 | Implement `feasibleTree()` | ✅ Done |
+| 3 | Implement `initLowLimValues()` | ✅ Done |
+| 4 | Implement `initCutValues()` with child propagation | ✅ Done |
+| 5 | Implement `leaveEdge()`, `enterEdge()` with flip logic | ✅ Done |
+| 6 | Implement `exchangeEdges()` | ✅ Done |
+| 7 | Wire up `assignLayersNetworkSimplex()` | ✅ Done |
+| 8 | Add tests | ✅ Done |
 
-Estimated effort: **~250 lines of code**, **~100 lines of tests**
+**Actual effort:** ~480 lines of code, ~400 lines of tests
+
+---
+
+## Future Work
+
+Potential optimizations:
+
+1. **Performance:** Add adjacency list for O(degree) neighbor lookup
+2. **Remove Fallback:** The validation fallback can be removed once confidence in the algorithm is higher

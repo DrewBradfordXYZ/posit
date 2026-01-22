@@ -248,41 +248,79 @@ func (t *spanningTree) initCutValues(s *layoutState) {
 }
 
 // assignCutValue computes the cut value for edge (v, parent[v]).
+// This follows dagre's calcCutValue algorithm which considers:
+// 1. The weight of the tree edge itself
+// 2. Non-tree edges crossing the cut
+// 3. Cut values of child tree edges (propagation)
 func (t *spanningTree) assignCutValue(s *layoutState, v string) {
 	parent := t.nodes[v].parent
 	if parent == "" {
 		return
 	}
 
-	// Find the graph edge weight
-	var graphWeight float64 = 1
+	// Determine if child (v) is on the tail end of the edge in the directed graph
+	childIsTail := true
 	graphEdge := s.edges[edgeKey{from: v, to: parent}]
-	if graphEdge != nil {
-		graphWeight = graphEdge.weight
-	} else {
+	if graphEdge == nil {
+		childIsTail = false
 		graphEdge = s.edges[edgeKey{from: parent, to: v}]
-		if graphEdge != nil {
-			graphWeight = graphEdge.weight
-		}
 	}
 
-	cutValue := int(graphWeight)
+	// Start with the weight of the tree edge
+	var cutValue int
+	if graphEdge != nil {
+		cutValue = int(graphEdge.weight)
+	} else {
+		cutValue = 1 // Default weight
+	}
 
-	// Add/subtract weights of non-tree edges based on direction
+	// Process all edges incident to v (except the edge to parent)
 	for key, edge := range s.edges {
-		if t.isTreeEdge(key) {
+		// Skip if neither endpoint is v
+		if key.from != v && key.to != v {
 			continue
 		}
 
-		fromIsDesc := t.isDescendant(key.from, v)
-		toIsDesc := t.isDescendant(key.to, v)
+		// Determine the "other" node and whether this is an out-edge from v
+		isOutEdge := key.from == v
+		var other string
+		if isOutEdge {
+			other = key.to
+		} else {
+			other = key.from
+		}
 
-		if fromIsDesc && !toIsDesc {
-			// Same direction as tree edge (exiting subtree)
+		// Skip the edge to parent
+		if other == parent {
+			continue
+		}
+
+		// pointsToHead: does this edge point in the same direction as the tree edge?
+		// If childIsTail (v->parent in graph), then out-edges from v point same direction
+		// If !childIsTail (parent->v in graph), then in-edges to v point same direction
+		pointsToHead := isOutEdge == childIsTail
+
+		// Add or subtract the edge weight
+		if pointsToHead {
 			cutValue += int(edge.weight)
-		} else if !fromIsDesc && toIsDesc {
-			// Opposite direction (entering subtree)
+		} else {
 			cutValue -= int(edge.weight)
+		}
+
+		// If this is a tree edge to a child, propagate its cut value
+		if t.isTreeEdge(key) {
+			// Get the cut value of the child tree edge
+			childCutValue := t.cutValues[edgeKey{from: other, to: v}]
+			if childCutValue == 0 {
+				childCutValue = t.cutValues[edgeKey{from: v, to: other}]
+			}
+
+			// Propagate: opposite sign of pointsToHead
+			if pointsToHead {
+				cutValue -= childCutValue
+			} else {
+				cutValue += childCutValue
+			}
 		}
 	}
 
@@ -305,21 +343,33 @@ func (t *spanningTree) leaveEdge() (edgeKey, bool) {
 }
 
 // enterEdge finds the best non-tree edge to add when removing leave.
+// This follows dagre's enterEdge algorithm with proper flip logic.
 func (t *spanningTree) enterEdge(s *layoutState, leave edgeKey) edgeKey {
-	// Determine which end is the "tail" (subtree being disconnected)
 	v, w := leave.from, leave.to
+
+	// For the rest of this function we assume that v is the tail and w is the
+	// head in the graph direction. If we don't have this edge in the graph,
+	// flip it to match the correct orientation.
+	if s.edges[edgeKey{from: v, to: w}] == nil {
+		v, w = w, v
+	}
+
 	vNode := t.nodes[v]
 	wNode := t.nodes[w]
 
-	// The tail is the one with smaller lim (it's the descendant)
-	var tailID string
-	if vNode.lim < wNode.lim {
-		tailID = v
-	} else {
-		tailID = w
+	// tailLabel is used to determine which side of the cut a node is on
+	tailLabel := vNode
+	flip := false
+
+	// If the root is in the tail of the edge then we need to flip the logic
+	// that checks for the head and tail nodes in the candidates filter below.
+	if vNode.lim > wNode.lim {
+		tailLabel = wNode
+		flip = true
 	}
 
-	// Find non-tree edge with minimum slack that crosses the cut
+	// Find non-tree edge with minimum slack that crosses the cut correctly.
+	// The entering edge must go from the tail side to the head side.
 	var best edgeKey
 	bestSlack := math.MaxInt
 	found := false
@@ -329,16 +379,19 @@ func (t *spanningTree) enterEdge(s *layoutState, leave edgeKey) edgeKey {
 			continue
 		}
 
-		fromInTail := t.isDescendant(key.from, tailID)
-		toInTail := t.isDescendant(key.to, tailID)
+		// Check if edge.v (from) is in tail subtree
+		fromInTail := t.isDescendant(key.from, tailLabel.id)
+		// Check if edge.w (to) is in tail subtree
+		toInTail := t.isDescendant(key.to, tailLabel.id)
 
-		// Edge must cross the cut: one end in tail, one end outside
-		if fromInTail == toInTail {
+		// The edge must cross the cut in the right direction:
+		// flip == fromInTail means "from" is on the expected side
+		// flip != toInTail means "to" is on the opposite side
+		// This ensures the edge goes from tail to head (or vice versa with flip)
+		if flip != fromInTail || flip == toInTail {
 			continue
 		}
 
-		// For a valid entering edge, we need the direction to tighten the tree
-		// The edge should go from tail to head (or opposite direction of what we need)
 		slack := s.slack(key)
 		if slack < bestSlack {
 			bestSlack = slack

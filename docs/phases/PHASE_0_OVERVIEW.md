@@ -4,12 +4,28 @@ This document provides an overview of the Sugiyama algorithm execution phases as
 
 ## Table of Contents
 
+- [Implementation Status](#implementation-status)
 - [Introduction](#introduction)
 - [The 6-Phase Pipeline](#the-6-phase-pipeline)
 - [Data Flow Summary](#data-flow-summary)
 - [State Management](#state-management)
 - [Entry Point](#entry-point)
 - [Phase Dependencies](#phase-dependencies)
+
+---
+
+## Implementation Status
+
+| Phase | Status | File | Tests |
+|-------|--------|------|-------|
+| 1. Cycle Removal | ✅ Complete | `acyclic.go` | 9 tests |
+| 2. Layer Assignment | ✅ Complete | `rank.go` | 11 tests |
+| 3. Dummy Nodes | ⏳ Stub | `stubs.go` | - |
+| 4. Crossing Minimization | ⏳ Stub | `stubs.go` | - |
+| 5. Coordinate Assignment | ⏳ Stub | `stubs.go` | - |
+| 6. Edge Routing | ⏳ Stub | `stubs.go` | - |
+
+**Foundation:** `state.go` contains `layoutState`, `layoutNode`, `layoutEdge`, and `edgeKey` types.
 
 ---
 
@@ -315,9 +331,9 @@ Where: V = vertices, E = edges, L = layers, k = crossing minimization iterations
 
 Continue to the individual phase documents for detailed implementation guidance:
 
-1. [Phase 1: Cycle Removal](./PHASE_1_CYCLE_REMOVAL.md)
-2. [Phase 2: Layer Assignment](./PHASE_2_LAYER_ASSIGNMENT.md)
-3. [Phase 3: Dummy Nodes](./PHASE_3_DUMMY_NODES.md)
+1. ✅ [Phase 1: Cycle Removal](./PHASE_1_CYCLE_REMOVAL.md) — Complete
+2. ✅ [Phase 2: Layer Assignment](./PHASE_2_LAYER_ASSIGNMENT.md) — Complete
+3. [Phase 3: Dummy Nodes](./PHASE_3_DUMMY_NODES.md) — **Next**
 4. [Phase 4: Crossing Minimization](./PHASE_4_CROSSING_MINIMIZATION.md)
 5. [Phase 5: Coordinate Assignment](./PHASE_5_COORDINATE_ASSIGNMENT.md)
 6. [Phase 6: Edge Routing](./PHASE_6_EDGE_ROUTING.md)

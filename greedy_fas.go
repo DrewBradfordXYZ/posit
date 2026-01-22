@@ -2,6 +2,10 @@ package posit
 
 import "sort"
 
+// negativeInfinity is used as an initial value when finding the maximum
+// difference between out-degree and in-degree in the greedy FAS algorithm.
+const negativeInfinity = -1e30
+
 // makeAcyclicGreedy implements the Eades/Lin/Smyth greedy heuristic for
 // feedback arc set (FAS) minimization. This algorithm produces better results
 // for weighted graphs by ordering nodes based on in/out degree differences.
@@ -114,7 +118,7 @@ func (s *layoutState) makeAcyclicGreedy() {
 		// If no sources or sinks, pick node with max (outDegree - inDegree)
 		// considering only edges to/from remaining nodes
 		var maxNode string
-		maxDiff := float64(-1 << 30)
+		maxDiff := negativeInfinity
 
 		for id := range remaining {
 			info := degrees[id]

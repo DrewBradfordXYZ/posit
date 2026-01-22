@@ -2,6 +2,11 @@ package posit
 
 import "math"
 
+// maxDummyChainIterations is a safeguard against infinite loops when
+// traversing dummy chains. This should never be reached in practice,
+// but prevents hangs if the chain structure were corrupted.
+const maxDummyChainIterations = 10000
+
 // routeEdges builds final edge paths and prepares output.
 // This is Phase 6 of the Sugiyama algorithm.
 func (s *layoutState) routeEdges() {
@@ -49,7 +54,13 @@ func (s *layoutState) buildEdgePaths() {
 		// Walk the chain
 		current := firstDummy
 		var targetID string
+		iterations := 0
 		for {
+			if iterations >= maxDummyChainIterations {
+				break // Prevent infinite loop from corrupted chain structure
+			}
+			iterations++
+
 			node := s.nodes[current]
 			if node == nil || !node.isDummy {
 				// Current is the target node (not a dummy)

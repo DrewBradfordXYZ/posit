@@ -29,6 +29,61 @@
 // screen coordinates). Node positions (X, Y) represent the top-left corner
 // of the node. To get the center, add Width/2 and Height/2.
 //
+// # Algorithm Selection
+//
+// The Algorithm option controls layer assignment:
+//
+//   - LongestPath (default): Fastest, O(V+E). Best for interactive use or
+//     when layout speed matters more than compactness. May produce more
+//     layers than necessary.
+//
+//   - TightTree: Middle ground, O(V*E). Produces tighter layouts than
+//     LongestPath without the full optimization cost of NetworkSimplex.
+//     Good default for most graphs under 500 nodes.
+//
+//   - NetworkSimplex: Optimal edge length minimization, O(V*E) typical.
+//     Produces the most compact layouts but slower for large graphs.
+//     Best when layout quality is paramount.
+//
+// The Acyclicer option controls cycle removal:
+//
+//   - DFSAcyclicer (default): Simple DFS-based back edge detection.
+//     Works well for most graphs.
+//
+//   - GreedyAcyclicer: Eades/Lin/Smyth heuristic. Better results for
+//     graphs with weighted edges where minimizing reversed edge weight
+//     matters.
+//
+// # Thread Safety
+//
+// A Graph instance is NOT safe for concurrent modification. Do not call
+// AddNode or AddEdge while Layout is executing or from multiple goroutines.
+//
+// However, calling Layout() on the same Graph from multiple goroutines is
+// safe, as each call creates independent internal state. The returned
+// Layout objects are also safe for concurrent read access.
+//
+// For concurrent graph building, use external synchronization or build
+// separate Graph instances per goroutine.
+//
+// # Performance Tuning
+//
+// For graphs over 100 nodes, the coordinate assignment automatically
+// switches from Brandes-Köpf to a simpler algorithm for speed.
+//
+// Layout options affect both appearance and performance:
+//
+//   - NodeSep: Horizontal spacing between nodes. Larger values produce
+//     wider layouts but don't significantly impact performance.
+//
+//   - RankSep: Vertical spacing between layers. Larger values produce
+//     taller layouts. No performance impact.
+//
+// For very large graphs (500+ nodes), consider:
+//   - Using LongestPath algorithm (fastest)
+//   - Simplifying the graph by collapsing clusters
+//   - Running layout in a background goroutine
+//
 // # Algorithm Complexity
 //
 //   - LongestPath ranking: O(V + E)
@@ -247,6 +302,11 @@ func (g *Graph) HasNode(id string) bool {
 
 // AddEdge adds a directed edge from source to target.
 // Returns an error if either node does not exist.
+//
+// If an edge from source to target already exists, the edges are
+// aggregated: their weights are summed for crossing minimization
+// and ranking calculations. The first edge's label options are preserved.
+//
 // Optional EdgeOptions can be provided to specify label dimensions.
 func (g *Graph) AddEdge(from, to string, opts ...EdgeOptions) error {
 	if _, ok := g.nodes[from]; !ok {

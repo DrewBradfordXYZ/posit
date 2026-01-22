@@ -368,6 +368,9 @@ func (t *spanningTree) enterEdge(s *layoutState, leave edgeKey) edgeKey {
 
 	vNode := t.nodes[v]
 	wNode := t.nodes[w]
+	if vNode == nil || wNode == nil {
+		return edgeKey{} // Invalid state - node not in tree
+	}
 
 	// tailLabel is used to determine which side of the cut a node is on
 	tailLabel := vNode

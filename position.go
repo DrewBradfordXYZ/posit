@@ -5,6 +5,11 @@ import (
 	"sort"
 )
 
+// maxBlockIterations is a safeguard against infinite loops in placeBlock.
+// This should never be reached in practice, but prevents hangs if the
+// align map were corrupted.
+const maxBlockIterations = 10000
+
 // assignCoordinates computes X and Y positions for all nodes.
 func (s *layoutState) assignCoordinates() {
 	s.assignYCoordinates()
@@ -444,7 +449,13 @@ func (s *layoutState) placeBlock(
 	xs[v] = 0
 
 	w := v
+	iterations := 0
 	for {
+		if iterations >= maxBlockIterations {
+			return // Prevent infinite loop from corrupted align map
+		}
+		iterations++
+
 		// Find predecessor in same layer
 		order := nodeOrder[w]
 		if order > 0 {

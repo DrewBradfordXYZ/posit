@@ -1,6 +1,7 @@
 package posit
 
 import (
+	"sync"
 	"testing"
 )
 
@@ -254,4 +255,95 @@ func TestSmallestWidthAlignment(t *testing.T) {
 	if width > 300 {
 		t.Errorf("Layout width %v is too large, smallest-width alignment may be broken", width)
 	}
+}
+
+func TestEdgeLabelPositions(t *testing.T) {
+	// Test all three label positions: LabelLeft, LabelCenter, LabelRight
+	for _, pos := range []LabelPosition{LabelLeft, LabelCenter, LabelRight} {
+		t.Run(string(pos), func(t *testing.T) {
+			g := NewGraph()
+			g.AddNode("A", NodeOptions{Width: 100, Height: 50})
+			g.AddNode("B", NodeOptions{Width: 100, Height: 50})
+			g.AddNode("C", NodeOptions{Width: 100, Height: 50})
+			g.AddNode("D", NodeOptions{Width: 100, Height: 50})
+
+			// Create a long edge A->D that spans multiple layers
+			g.MustAddEdge("A", "B")
+			g.MustAddEdge("B", "C")
+			g.MustAddEdge("C", "D")
+			g.AddEdge("A", "D", EdgeOptions{
+				LabelWidth:    40,
+				LabelHeight:   20,
+				LabelPosition: pos,
+			})
+
+			layout := g.Layout()
+			edge, ok := layout.Edge("A", "D")
+			if !ok {
+				t.Fatal("Edge A->D not found in layout")
+			}
+
+			if edge.Label == nil {
+				t.Fatal("Edge label should have coordinates")
+			}
+
+			// Label should be positioned between A and D
+			nodeA := layout.Nodes["A"]
+			nodeD := layout.Nodes["D"]
+
+			if edge.Label.Y <= nodeA.Y || edge.Label.Y >= nodeD.Y+nodeD.Height {
+				t.Errorf("Label Y (%v) should be between node A (%v) and node D (%v)",
+					edge.Label.Y, nodeA.Y, nodeD.Y+nodeD.Height)
+			}
+
+			// Label dimensions should be preserved
+			if edge.Label.Width != 40 || edge.Label.Height != 20 {
+				t.Errorf("Label dimensions wrong: got %vx%v, want 40x20",
+					edge.Label.Width, edge.Label.Height)
+			}
+		})
+	}
+}
+
+func TestConcurrentLayout(t *testing.T) {
+	// Build a graph once
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
+	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+
+	// Run layout concurrently from multiple goroutines
+	var wg sync.WaitGroup
+	errors := make(chan error, 10)
+
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			layout := g.Layout()
+			if len(layout.Nodes) != 3 {
+				errors <- &concurrentError{msg: "Unexpected node count"}
+			}
+			if len(layout.Edges) != 2 {
+				errors <- &concurrentError{msg: "Unexpected edge count"}
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errors)
+
+	for err := range errors {
+		t.Error(err)
+	}
+}
+
+type concurrentError struct {
+	msg string
+}
+
+func (e *concurrentError) Error() string {
+	return e.msg
 }

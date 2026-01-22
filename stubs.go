@@ -1,13 +1,7 @@
 package posit
 
-// Stub implementations for phases 3-6.
+// Stub implementations for phases 4-6.
 // These will be replaced with full implementations in later phases.
-
-// addDummyNodes inserts dummy nodes for edges spanning multiple layers (Phase 3).
-// Stub: no-op for now.
-func (s *layoutState) addDummyNodes() {
-	// No-op for stub
-}
 
 // minimizeCrossings orders nodes within layers to reduce edge crossings (Phase 4).
 // Stub: keeps initial order from buildLayers.

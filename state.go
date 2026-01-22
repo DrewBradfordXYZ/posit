@@ -58,6 +58,7 @@ type layoutState struct {
 	// Tracking for cleanup
 	reversedEdges []edgeKey // edges to flip back
 	dummyChains   []string  // first dummy in each chain
+	dummyCounter  int       // for generating unique dummy IDs
 }
 
 // newLayoutState initializes internal state from a Graph.

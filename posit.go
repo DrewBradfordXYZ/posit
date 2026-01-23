@@ -184,6 +184,13 @@ type Options struct {
 	// Default: 100. Set higher if you want better alignment for larger graphs.
 	BKThreshold int
 
+	// AdjacentExchangeLimit is the maximum layer size for which adjacent
+	// exchange optimization is performed during crossing minimization.
+	// Adjacent exchange swaps neighboring nodes to escape local minima.
+	// Default: 0 (no limit — uses efficient O(deg²) incremental algorithm).
+	// Set to a positive value to skip adjacent exchange for layers larger than this.
+	AdjacentExchangeLimit int
+
 	// RouteStyle selects the edge routing algorithm (default: RoutePolyline).
 	RouteStyle RouteStyle
 

@@ -198,37 +198,33 @@ func (s *layoutState) sweepUp() {
 }
 
 // adjacentExchange tries swapping each pair of adjacent nodes in each layer,
-// keeping the swap if it reduces the total crossing count.
-// Skipped for large layers (>50 nodes) where the O(n²) cost is prohibitive.
+// keeping the swap if it reduces edge crossings. Uses an incremental crossing
+// delta computation: O(deg(u) × deg(v)) per swap instead of O(E log V),
+// making it efficient for layers of any size.
 func (s *layoutState) adjacentExchange() {
+	limit := s.opts.AdjacentExchangeLimit
 	for rank := 0; rank < len(s.layers); rank++ {
 		layer := s.layers[rank]
-		if len(layer) <= 1 || len(layer) > 50 {
+		if len(layer) <= 1 {
+			continue
+		}
+		if limit > 0 && len(layer) > limit {
 			continue
 		}
 
-		// Limit passes to prevent excessive computation
+		// Multiple passes until no improvement
 		for pass := 0; pass < 2; pass++ {
 			improved := false
 			for i := 0; i < len(layer)-1; i++ {
-				// Count crossings before swap
-				before := s.crossingsInvolving(rank)
+				// Compute crossing delta: positive means swap reduces crossings
+				delta := s.swapCrossingDelta(rank, i)
 
-				// Swap adjacent pair
-				layer[i], layer[i+1] = layer[i+1], layer[i]
-				s.nodes[layer[i]].order = i
-				s.nodes[layer[i+1]].order = i + 1
-
-				// Count crossings after swap
-				after := s.crossingsInvolving(rank)
-
-				if after < before {
-					improved = true
-				} else {
-					// Revert swap
+				if delta > 0 {
+					// Swap is beneficial — keep it
 					layer[i], layer[i+1] = layer[i+1], layer[i]
 					s.nodes[layer[i]].order = i
 					s.nodes[layer[i+1]].order = i + 1
+					improved = true
 				}
 			}
 			if !improved {
@@ -238,16 +234,98 @@ func (s *layoutState) adjacentExchange() {
 	}
 }
 
-// crossingsInvolving counts crossings in layers adjacent to the given rank.
-func (s *layoutState) crossingsInvolving(rank int) float64 {
-	total := 0.0
+// swapCrossingDelta computes the net crossing reduction from swapping
+// nodes at positions i and i+1 in the given layer. Returns positive
+// if the swap reduces crossings, negative if it increases them.
+// Complexity: O(deg(u) × deg(v)) — only considers edges incident to
+// the two nodes being swapped.
+func (s *layoutState) swapCrossingDelta(rank, i int) float64 {
+	u := s.layers[rank][i]
+	v := s.layers[rank][i+1]
+
+	delta := 0.0
+
+	// Check crossings with layer above (predecessors)
 	if rank > 0 {
-		total += s.twoLayerCrossCount(s.layers[rank-1], s.layers[rank])
+		delta += s.pairCrossingDelta(u, v, true)
 	}
+
+	// Check crossings with layer below (successors)
 	if rank < len(s.layers)-1 {
-		total += s.twoLayerCrossCount(s.layers[rank], s.layers[rank+1])
+		delta += s.pairCrossingDelta(u, v, false)
 	}
-	return total
+
+	return delta
+}
+
+// pairCrossingDelta computes crossing delta between edges of u and v
+// to/from an adjacent layer. When usePredecessors is true, checks the
+// layer above; otherwise checks the layer below.
+//
+// With u at position i and v at position i+1:
+//   - Edges cross when their other endpoints are in opposite order
+//   - Before swap: u-edge and v-edge cross when neighbor_u.order > neighbor_v.order
+//   - After swap: they cross when neighbor_u.order < neighbor_v.order
+//   - Delta = crossings_before - crossings_after (positive = improvement)
+func (s *layoutState) pairCrossingDelta(u, v string, usePredecessors bool) float64 {
+	var uNeighbors, vNeighbors []string
+	if usePredecessors {
+		uNeighbors = s.predecessors[u]
+		vNeighbors = s.predecessors[v]
+	} else {
+		uNeighbors = s.successors[u]
+		vNeighbors = s.successors[v]
+	}
+
+	if len(uNeighbors) == 0 || len(vNeighbors) == 0 {
+		return 0
+	}
+
+	before := 0.0 // crossings with u first (current)
+	after := 0.0  // crossings with v first (after swap)
+
+	for _, nu := range uNeighbors {
+		nuNode := s.nodes[nu]
+		if nuNode == nil {
+			continue
+		}
+		wU := s.edgeWeightBetween(u, nu)
+
+		for _, nv := range vNeighbors {
+			nvNode := s.nodes[nv]
+			if nvNode == nil {
+				continue
+			}
+			wV := s.edgeWeightBetween(v, nv)
+			w := wU * wV
+
+			if nuNode.order > nvNode.order {
+				before += w
+			} else if nuNode.order < nvNode.order {
+				after += w
+			}
+			// Equal positions: no crossing in either order
+		}
+	}
+
+	return before - after
+}
+
+// edgeWeightBetween returns the weight of the edge between two nodes.
+func (s *layoutState) edgeWeightBetween(a, b string) float64 {
+	if edge := s.edges[edgeKey{from: a, to: b}]; edge != nil {
+		if edge.weight >= 1 {
+			return edge.weight
+		}
+		return 1
+	}
+	if edge := s.edges[edgeKey{from: b, to: a}]; edge != nil {
+		if edge.weight >= 1 {
+			return edge.weight
+		}
+		return 1
+	}
+	return 1
 }
 
 // barycenterEntry holds barycenter data for sorting.

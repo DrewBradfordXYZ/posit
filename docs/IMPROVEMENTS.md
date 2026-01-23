@@ -1,31 +1,43 @@
-# Posit Improvements Roadmap
+# Posit Roadmap
 
-**Context:** Posit runs server-side in Go as part of the basetypes graph visualization. This gives it access to schema metadata, field-level handle information, and persistent state that client-side layout engines (ELK.js) cannot leverage.
+Planned improvements to Posit as a general-purpose layered graph layout library. These are standard graph layout concepts that benefit any consumer — schema diagrams, dependency graphs, org charts, state machines, etc.
 
-## Improvement 1: Port-Aware Edge Routing
+---
+
+## 1. Port Support
 
 **Priority:** High
-**Impact:** Eliminates ~200 lines of client-side handle calculation code and 1,150 DOM queries
+**Status:** Planned
 
-### Problem
+### Concept
 
-When nodes are expanded, edges connect to specific field rows (handles) at known Y positions. Currently:
+Ports are fixed connection points at specific positions on a node. Without ports, edges connect to node boundaries using rectangle intersection. With ports, edges connect to precise, named locations.
 
-1. Server sends `source-handle="field-3"` and `target-handle="field-42"` as HTML attributes
-2. Client calls `getBoundingClientRect()` on each handle element to find its pixel Y position
-3. This causes layout thrashing (the original 2,463ms bottleneck that "fast edge mode" worked around)
+This is a standard feature in ELK and Graphviz but absent from dagre (Posit's reference implementation).
 
-The client reinvents what the server already knows: the Y position of each field row.
+### Use Cases
 
-### Solution
+- Database schema diagrams: edges connect to specific field rows
+- Circuit diagrams: components have labeled input/output pins
+- UML class diagrams: associations connect to specific attributes
+- Data flow diagrams: nodes have named input/output channels
 
-Add port support to Posit. Ports are fixed connection points at specific positions on a node.
+### API Design
 
 ```go
+type Side int
+
+const (
+    Left Side = iota
+    Right
+    Top
+    Bottom
+)
+
 type PortOptions struct {
-    ID       string  // e.g., "field-3", "field-42"
-    Side     Side    // Left, Right, Top, Bottom
-    Offset   float64 // Y offset from node top (or X offset for top/bottom ports)
+    ID     string  // Unique within the node (e.g., "in-1", "out-2")
+    Side   Side    // Which side of the node
+    Offset float64 // Distance from node origin along the side
 }
 
 type NodeOptions struct {
@@ -41,399 +53,219 @@ type EdgeOptions struct {
 }
 ```
 
-Edge routing would use port positions instead of `intersectRect()`:
+### Edge Routing with Ports
+
+When an edge specifies ports, routing uses the port's absolute position instead of boundary intersection:
 
 ```go
 func (s *layoutState) getEdgeEndpoint(node *layoutNode, portID string) EdgePoint {
     if port, ok := node.ports[portID]; ok {
-        // Use exact port position
         switch port.Side {
         case Right:
             return EdgePoint{X: node.x + node.width, Y: node.y + port.Offset}
         case Left:
             return EdgePoint{X: node.x, Y: node.y + port.Offset}
+        case Bottom:
+            return EdgePoint{X: node.x + port.Offset, Y: node.y + node.height}
+        case Top:
+            return EdgePoint{X: node.x + port.Offset, Y: node.y}
         }
     }
-    // Fallback to intersectRect for nodes without ports
+    // Fallback: boundary intersection for nodes without ports
     return s.intersectRect(node, target)
 }
 ```
 
-### Server Integration
-
-The server knows field order and can compute port offsets:
-
-```go
-// In layout.go
-const fieldRowHeight = 20.0
-const headerHeight = 32.0
-
-func computePorts(table data.TableGraphNode, fields []data.Field, expanded bool) []posit.PortOptions {
-    if !expanded {
-        return nil // Collapsed nodes use boundary intersection
-    }
-
-    var ports []posit.PortOptions
-    for i, field := range fields {
-        if field.ID == 3 || field.IsFK {
-            offset := headerHeight + float64(i)*fieldRowHeight + fieldRowHeight/2
-            side := posit.Right
-            if field.IsFK {
-                side = posit.Left
-            }
-            ports = append(ports, posit.PortOptions{
-                ID:     fmt.Sprintf("field-%d", field.ID),
-                Side:   side,
-                Offset: offset,
-            })
-        }
-    }
-    return ports
-}
-```
-
-### What This Eliminates Client-Side
-
-| Current Client Code | Purpose | With Port Support |
-|---------------------|---------|-------------------|
-| `getHandleWorldPosition()` | DOM query for handle Y | **Eliminated** - server pre-computed |
-| `batchPopulateHandleCache()` | Batch DOM reads to avoid thrashing | **Eliminated** |
-| `handleLocalOffsetCache` | Cache handle positions after first query | **Eliminated** |
-| `invalidateHandleCacheForNode()` | Clear cache on node move | **Eliminated** |
-| `enablePreciseEdges()` | Switch from fast mode to DOM mode | **Eliminated** |
-| `fastEdgeMode` flag | Skip DOM queries on initial render | **Eliminated** - only mode |
-
-### Edge Output with Ports
+### Output
 
 ```go
 type EdgeLayout struct {
     From       string
     To         string
     Points     []EdgePoint
-    SourcePort string // Which port the edge exits from
-    TargetPort string // Which port the edge enters
-    SourceSide string // "left", "right", "top", "bottom"
-    TargetSide string // "left", "right", "top", "bottom"
+    SourcePort string // Which port the edge exits from (if specified)
+    TargetPort string // Which port the edge enters (if specified)
+    SourceSide Side   // Computed attachment side
+    TargetSide Side   // Computed attachment side
 }
 ```
 
-The server sets `source-position` and `target-position` attributes directly on `<flow-edge>`:
-
-```html
-<flow-edge source="nodeA" target="nodeB"
-           source-handle="field-3" target-handle="field-42"
-           source-position="right" target-position="left"
-           waypoints='[{"x":250,"y":180}]' />
-```
-
-Client renders with no computation - just uses the provided positions and waypoints.
+Consumers receive fully-resolved positions — no client-side inference needed.
 
 ---
 
-## Improvement 2: Port-Level Crossing Minimization
+## 2. Port-Level Crossing Minimization
 
 **Priority:** Medium
-**Impact:** Better visual quality for expanded nodes with many FK fields
+**Depends on:** Port Support
 
-### Problem
+### Concept
 
-When a node has multiple FK fields (handles), edges to those fields may cross each other unnecessarily. The current barycenter heuristic operates on nodes, not ports.
+When a node has multiple ports on the same side, edges connecting to those ports may cross unnecessarily. Standard crossing minimization operates on nodes; this extends it to consider port ordering within a node.
 
-### Solution
+### Approach
 
-Extend crossing minimization to consider port ordering. When computing barycenters for nodes with ports, use the port Y positions as sub-ordering:
+After the standard barycenter node ordering (Phase 4), run an additional pass that considers port positions as sub-ordering weights:
 
 ```go
-// When computing crossings between edges to the same node's ports,
-// optimize port ordering or route edges to minimize visual crossings
 func (s *layoutState) minimizePortCrossings() {
     for _, node := range s.nodes {
         if len(node.ports) <= 1 {
             continue
         }
-        // Sort edges by their source/target positions to minimize crossings
-        // This is a separate optimization pass after node ordering
+        // For edges connecting to ports on the same side,
+        // check if reordering reduces crossings
+        // Use port Y positions as weights in barycenter calculation
     }
 }
 ```
 
-Alternatively, use port Y positions as weights in the barycenter calculation so nodes with connected ports at similar heights are placed near each other.
+Alternatively, port positions influence the barycenter calculation so nodes with connected ports at similar offsets are placed near each other.
 
 ---
 
-## Improvement 3: Handle Side Inference (Server-Side)
+## 3. Edge Attachment Side Inference
 
 **Priority:** Medium
-**Impact:** Eliminates client-side `inferPosition()` and `axis` constraints
+**Depends on:** Port Support (optional, works without ports too)
 
-### Problem
+### Concept
 
-Currently the client infers which side of a node an edge should connect to based on relative node positions:
+After layout, Posit knows the relative positions of all nodes. It can compute the optimal side (left, right, top, bottom) for each edge endpoint without the consumer needing to infer this at render time.
 
-```javascript
-// Client-side inference
-function inferPosition(from, to, axis) {
-    const dx = to.x - from.x
-    if (axis === 'horizontal') {
-        return dx > 0 ? 'right' : 'left'
-    }
-    // ...
-}
-```
-
-This is recalculated every frame during drag.
-
-### Solution
-
-Posit already knows the relative positions of all nodes after layout. It can compute the optimal side for each edge endpoint:
+### Approach
 
 ```go
-func inferSide(fromNode, toNode *layoutNode) (sourceSide, targetSide string) {
+func inferSide(fromNode, toNode *layoutNode) (sourceSide, targetSide Side) {
     dx := (toNode.x + toNode.width/2) - (fromNode.x + fromNode.width/2)
     dy := (toNode.y + toNode.height/2) - (fromNode.y + fromNode.height/2)
 
     if math.Abs(dx) > math.Abs(dy) {
         if dx > 0 {
-            return "right", "left"
+            return Right, Left
         }
-        return "left", "right"
+        return Left, Right
     }
     if dy > 0 {
-        return "bottom", "top"
+        return Bottom, Top
     }
-    return "top", "bottom"
+    return Top, Bottom
 }
 ```
 
-The `SourceSide` and `TargetSide` fields in `EdgeLayout` provide this to the client, which renders directly without inference.
+The `SourceSide` and `TargetSide` fields in `EdgeLayout` provide this directly. Consumers render edges without position inference logic.
 
-**During drag:** The client still uses `inferPosition()` for transient states. On drag-end, the server recomputes authoritative sides.
+### Port Interaction
+
+When ports are specified, the port's `Side` field takes precedence over inferred sides. Side inference is the fallback for edges without port constraints.
 
 ---
 
-## Improvement 4: Schema-Aware Edge Weighting
+## 4. Edge Weight in Public API
 
 **Priority:** Low
-**Impact:** Better layout quality for complex schemas
 
-### Problem
+### Concept
 
-All edges are treated equally during crossing minimization. But in QuickBase schemas, some relationships are more important:
+Posit already uses edge weights internally for crossing minimization and ranking. Exposing weight in the public `EdgeOptions` API lets consumers influence layout priority.
 
-- FK relationships (direct parent-child) are primary
-- Lookup fields reference data across tables
-- Summary fields aggregate data
+Heavier edges are prioritized: they're less likely to be reversed during cycle removal, and crossing minimization favors keeping them uncrossed.
 
-### Solution
-
-Add edge weight support to the integration layer (Posit already supports weighted edges internally):
+### API Addition
 
 ```go
-func computeEdgeWeight(edge data.TableGraphEdge) float64 {
-    // FK relationships are the primary structural edges
-    if edge.RelType == "FK" {
-        return 2.0
-    }
-    // Lookups are secondary
-    if edge.RelType == "Lookup" {
-        return 1.0
-    }
-    // Summaries are tertiary
-    return 0.5
+type EdgeOptions struct {
+    Weight float64 // Layout priority (default: 1.0, higher = more important)
+    // ... existing label options ...
 }
-
-// When adding edges to graph
-g.AddEdge(edge.From, edge.To, posit.EdgeOptions{
-    Weight: computeEdgeWeight(edge),
-})
 ```
 
-Heavier edges are prioritized during crossing minimization, keeping primary relationships visually clearer.
+### Use Cases
 
-**Note:** This requires adding a `Weight` field to `EdgeOptions` in Posit's API.
+- Primary relationships weighted higher than secondary ones
+- Critical path edges in dependency graphs
+- "Strong" vs "weak" associations in domain models
 
 ---
 
-## Improvement 5: Incremental Layout on Expand/Collapse
+## 5. Incremental Layout
 
 **Priority:** Medium
-**Impact:** Faster layout updates, less visual disruption
+**Effort:** High
 
-### Problem
+### Concept
 
-When a node expands (height changes from 70px to 450px+), the layout should adjust:
-- Nodes below may need to shift down
-- Edge routing changes (ports vs boundary)
-- But nodes far away shouldn't jump
+Given an existing layout and a set of changed nodes (e.g., one node changed height), produce a minimal adjustment that preserves the mental map. Nodes far from the change shouldn't move.
 
-Currently: client handles expand locally (CSS transition), no layout recompute.
+This is listed in ARCHITECTURE.md as a planned enhancement.
 
-### Solution
-
-Add incremental layout to Posit - given an existing layout and a set of changed nodes, produce a minimal adjustment:
+### API Design
 
 ```go
 type IncrementalOptions struct {
-    // Fixed nodes that should not move (or move minimally)
+    // Nodes that should not move (or move minimally)
     Fixed map[string]bool
-    // Changed nodes with new dimensions
+    // Nodes with new dimensions
     Changes map[string]NodeOptions
 }
 
 func (g *Graph) IncrementalLayout(base *Layout, changes IncrementalOptions) *Layout {
     // 1. Apply dimension changes
-    // 2. Re-run coordinate assignment with constraints
-    // 3. Keep fixed nodes at their current positions (or shift minimally)
-    // 4. Re-route affected edges
+    // 2. Keep same layer assignment
+    // 3. Re-run Y coordinate assignment (layers shift for taller nodes)
+    // 4. Keep X positions fixed for unchanged nodes
+    // 5. Re-route affected edges only
 }
 ```
 
-This is a larger architectural addition. The simple version:
-- Keep same layer assignment
-- Re-run Y coordinate assignment (layers shift to accommodate taller nodes)
-- Keep X positions fixed
-- Re-route edges for changed nodes only
+### Constraints
+
+The simple version preserves layer assignment and X positions, only adjusting Y coordinates and edge routes. A full version could re-run crossing minimization locally.
 
 ---
 
-## Improvement 6: Layout Caching and Pre-computation
+## 6. Compound Graphs (Clusters)
 
 **Priority:** Low
-**Impact:** Instant graph load for repeated views
+**Effort:** Very High
 
-### Problem
+### Concept
 
-Layout is computed on first view and saved to SQLite. But if the schema changes (new table, new relationship), positions are stale.
+Compound graphs allow nodes to contain other nodes (subgraphs/clusters). Clusters are laid out as atomic units first, then internal nodes are positioned within. This is listed in ARCHITECTURE.md as a known limitation.
 
-### Solution
-
-Cache layouts by schema hash. Recompute only when graph structure changes:
+### API Design
 
 ```go
-type LayoutCache struct {
-    Hash      string     // SHA256 of graph structure (node IDs + edge pairs)
-    Layout    *Layout    // Cached result
-    ComputeAt time.Time
-}
-
-func (h *Handlers) getOrComputeLayout(graphData *data.TableGraph, expanded map[string]bool) *posit.Layout {
-    hash := computeGraphHash(graphData, expanded)
-
-    if cached := h.cache.Get(hash); cached != nil {
-        return cached
-    }
-
-    layout := ComputeLayout(graphData.Nodes, graphData.Edges, expanded)
-    h.cache.Set(hash, layout)
-    return layout
-}
-```
-
-**Pre-computation:** Could run layout at `download_schema` time, so graphs are instantly available.
-
----
-
-## Improvement 7: Cluster/Grouping Support
-
-**Priority:** Low
-**Impact:** Better organization for large schemas
-
-### Problem
-
-Large apps have natural table groupings (e.g., "Project" tables, "Finance" tables). Currently all tables are laid out independently.
-
-### Solution
-
-Add compound node (cluster) support to Posit:
-
-```go
-g.AddNode("cluster-projects", posit.NodeOptions{
+g.AddNode("cluster-a", posit.NodeOptions{
     IsCluster: true,
     Padding:   20,
 })
-g.SetParent("projects-table", "cluster-projects")
-g.SetParent("tasks-table", "cluster-projects")
+g.SetParent("node-1", "cluster-a")
+g.SetParent("node-2", "cluster-a")
 ```
 
-Clusters are laid out as atomic units first, then internal nodes are positioned within.
+### Use Cases
 
-**Note:** This is a significant architectural addition (listed as a current limitation in Posit's docs). Defer until basic integration is proven.
+- Package grouping in dependency graphs
+- Organizational units in org charts
+- Swimlanes in process diagrams
+- Module boundaries in architecture diagrams
 
----
+### Architecture Impact
 
-## Improvement 8: SVG/Image Export
-
-**Priority:** Low
-**Impact:** Documentation, sharing, offline viewing
-
-### Problem
-
-Graph can only be viewed in the browser. No way to export for documentation or share with non-users.
-
-### Solution
-
-Since Posit computes complete edge paths server-side, generating SVG is straightforward:
-
-```go
-func ExportSVG(layout *posit.Layout, nodes []data.TableGraphNode) []byte {
-    var buf bytes.Buffer
-    // Write SVG header with viewBox from layout bounds
-    // Render nodes as rects with labels
-    // Render edges as polylines/paths from EdgeLayout.Points
-    // Return complete SVG
-}
-```
-
-CLI integration:
-```bash
-basetypes graph export --app=xyz --format=svg > schema.svg
-basetypes graph export --app=xyz --format=png > schema.png
-```
+This requires changes to every phase of the algorithm — cycle removal, ranking, ordering, and coordinate assignment all need cluster awareness. Defer until core features are stable.
 
 ---
 
 ## Implementation Order
 
-| # | Improvement | Effort | Impact | Dependencies |
-|---|-------------|--------|--------|--------------|
-| 1 | Port-aware routing | Medium | Very High | None |
-| 3 | Handle side inference | Low | Medium | Improvement 1 |
-| 2 | Port-level crossing minimization | Medium | Medium | Improvement 1 |
-| 5 | Incremental layout | High | Medium | None |
-| 4 | Schema-aware edge weighting | Low | Low | Weight in EdgeOptions |
-| 6 | Layout caching | Low | Low | None |
-| 7 | Cluster support | Very High | Medium | Architecture change |
-| 8 | SVG export | Medium | Low | None |
+| # | Improvement | Effort | Dependencies |
+|---|-------------|--------|--------------|
+| 1 | Port support | Medium | None |
+| 3 | Side inference | Low | None (enhanced by ports) |
+| 4 | Edge weight API | Low | None |
+| 2 | Port crossing minimization | Medium | Port support |
+| 5 | Incremental layout | High | None |
+| 6 | Compound graphs | Very High | Architecture change |
 
-**Recommended first step:** Improvement 1 (ports) + Improvement 3 (side inference) together, as they eliminate the most client-side complexity and directly address the performance bottleneck identified in the graph performance analysis.
-
----
-
-## What This Means for datastar-flow
-
-With improvements 1 and 3 implemented, the following client-side code becomes unnecessary:
-
-```
-flow-container.html:
-  - getHandleWorldPosition()        (~40 lines)
-  - batchPopulateHandleCache()      (~30 lines)
-  - handleLocalOffsetCache          (~20 lines)
-  - getCachedHandleOffset()         (~15 lines)
-  - invalidateHandleCacheForNode()  (~10 lines)
-  - enablePreciseEdges()            (~15 lines)
-  - fastEdgeMode flag + logic       (~20 lines)
-  - getHandlePositionFallback()     (~25 lines)
-
-paths.js:
-  - inferPosition()                 (~10 lines)
-
-Total: ~185 lines of performance-critical code eliminated
-```
-
-The edge rendering path simplifies to:
-1. Read `source-position`, `target-position` from attributes (server-computed)
-2. Read `waypoints` from attributes (server-computed)
-3. Calculate bezier/smoothstep path from waypoints
-4. Update SVG `<path>` element
-
-No DOM queries. No caching. No invalidation. No fast/precise mode switching.
+Ports and side inference are the foundational additions. They provide consumers with fully-resolved edge endpoints, eliminating the most common reason for client-side position computation.

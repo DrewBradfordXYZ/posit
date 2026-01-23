@@ -220,11 +220,27 @@ func (s *layoutState) buildLayout() *Layout {
 		if n.isDummy {
 			continue
 		}
-		layout.Nodes[id] = NodeLayout{
+		nodeLayout := NodeLayout{
 			Position: Position{X: n.x, Y: n.y},
 			Width:    n.width,
 			Height:   n.height,
 		}
+
+		// Export computed port positions for auto-positioned ports
+		for _, port := range n.ports {
+			if port.Constraint == PortFixedSide || port.Constraint == PortFixedOrder || port.Constraint == PortFree {
+				if nodeLayout.Ports == nil {
+					nodeLayout.Ports = make(map[string]PortLayout)
+				}
+				nodeLayout.Ports[port.ID] = PortLayout{
+					ID:     port.ID,
+					Side:   port.Side,
+					Offset: port.Offset,
+				}
+			}
+		}
+
+		layout.Nodes[id] = nodeLayout
 	}
 
 	// Export edges with structured keys

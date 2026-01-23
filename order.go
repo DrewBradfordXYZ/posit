@@ -924,6 +924,11 @@ func (s *layoutState) enforceClusterAdjacency() {
 // as sub-ordering weights so connected nodes are placed at heights matching
 // port positions.
 func (s *layoutState) minimizePortCrossings() {
+	// Pre-pass: for PortFixedSide ports, compute temporary ordering based on
+	// connected node positions (layer order). This assigns temporary offsets
+	// so the adjustForPortPositions pass can use them.
+	s.precomputePortOrder()
+
 	// For each layer, check if any nodes have ports that could benefit
 	// from reordering based on port positions.
 	for rank := 0; rank < len(s.layers); rank++ {
@@ -948,6 +953,193 @@ func (s *layoutState) minimizePortCrossings() {
 		// using port offsets as weights
 		s.adjustForPortPositions(rank)
 	}
+}
+
+// precomputePortOrder reorders PortFixedSide, PortFixedOrder, and PortFree ports
+// based on connected node positions (using layer ordering) and assigns temporary
+// evenly-distributed offsets. This runs during crossing minimization before
+// coordinates are assigned — the final offsets are recomputed in computePortOffsets().
+func (s *layoutState) precomputePortOrder() {
+	for _, node := range s.nodes {
+		if node.isDummy || len(node.ports) == 0 {
+			continue
+		}
+
+		// Check if any ports need precomputation
+		hasComputed := false
+		for _, port := range node.ports {
+			if port.Constraint == PortFixedSide || port.Constraint == PortFixedOrder || port.Constraint == PortFree {
+				hasComputed = true
+				break
+			}
+		}
+		if !hasComputed {
+			continue
+		}
+
+		// For PortFree ports, assign a preliminary side based on layer/order info
+		s.preassignFreeSides(node)
+
+		// Group port indices by (internal) side
+		sideGroups := map[Side][]int{}
+		for i := range node.ports {
+			port := &node.ports[i]
+			if port.Constraint == PortFixedSide || port.Constraint == PortFixedOrder || port.Constraint == PortFree {
+				side := s.portSideToInternal(port.Side)
+				sideGroups[side] = append(sideGroups[side], i)
+			}
+		}
+
+		// For each side group, sort and assign temporary offsets
+		for side, indices := range sideGroups {
+			s.precomputeSideOrder(node, side, indices)
+		}
+	}
+}
+
+// preassignFreeSides assigns a preliminary side to PortFree ports during crossing
+// minimization using layer/order information (no coordinates available yet).
+// In a top-to-bottom layout: different rank → Top/Bottom, same rank → Left/Right.
+func (s *layoutState) preassignFreeSides(node *layoutNode) {
+	for i := range node.ports {
+		port := &node.ports[i]
+		if port.Constraint != PortFree {
+			continue
+		}
+
+		// Compute average rank/order delta to connected nodes
+		dRank, dOrder := s.portConnectedLayerDelta(node, port.ID)
+
+		// Pick side based on which axis has more separation
+		// dRank > 0 means connected nodes are below → Bottom
+		// dOrder > 0 means connected nodes are to the right → Right
+		switch port.Axis {
+		case PortAxisHorizontal:
+			if dOrder >= 0 {
+				port.Side = Right
+			} else {
+				port.Side = Left
+			}
+		case PortAxisVertical:
+			if dRank >= 0 {
+				port.Side = Bottom
+			} else {
+				port.Side = Top
+			}
+		default: // PortAxisAny
+			if abs(dRank) > abs(dOrder) {
+				if dRank >= 0 {
+					port.Side = Bottom
+				} else {
+					port.Side = Top
+				}
+			} else {
+				if dOrder >= 0 {
+					port.Side = Right
+				} else {
+					port.Side = Left
+				}
+			}
+		}
+	}
+}
+
+// portConnectedLayerDelta returns the average rank and order delta from a node
+// to all nodes connected to a specific port.
+func (s *layoutState) portConnectedLayerDelta(node *layoutNode, portID string) (dRank, dOrder float64) {
+	count := 0
+	for _, edge := range s.edges {
+		var connNode *layoutNode
+		if edge.key.from == node.id && edge.sourcePort == portID {
+			connNode = s.nodes[edge.key.to]
+		} else if edge.key.to == node.id && edge.targetPort == portID {
+			connNode = s.nodes[edge.key.from]
+		}
+		if connNode == nil {
+			continue
+		}
+		dRank += float64(connNode.rank - node.rank)
+		dOrder += float64(connNode.order - node.order)
+		count++
+	}
+	if count > 0 {
+		dRank /= float64(count)
+		dOrder /= float64(count)
+	}
+	return dRank, dOrder
+}
+
+func abs(x float64) float64 {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// precomputeSideOrder sorts ports on one side of a node and assigns temporary offsets
+// based on layer ordering of connected nodes.
+func (s *layoutState) precomputeSideOrder(node *layoutNode, side Side, indices []int) {
+	if len(indices) == 0 {
+		return
+	}
+
+	// Determine side length
+	var sideLength float64
+	switch side {
+	case Left, Right:
+		sideLength = node.height
+	case Top, Bottom:
+		sideLength = node.width
+	}
+
+	// Sort by the appropriate criteria
+	sort.SliceStable(indices, func(a, b int) bool {
+		portA := &node.ports[indices[a]]
+		portB := &node.ports[indices[b]]
+
+		if portA.Constraint == PortFixedOrder && portB.Constraint == PortFixedOrder {
+			return portA.Order < portB.Order
+		}
+
+		// PortFixedSide: sort by layer-order-based barycenter of connected nodes
+		posA := s.portOrderBarycenter(node.id, portA.ID)
+		posB := s.portOrderBarycenter(node.id, portB.ID)
+		return posA < posB
+	})
+
+	// Assign temporary evenly-distributed offsets
+	count := len(indices)
+	for rank, idx := range indices {
+		node.ports[idx].Offset = sideLength * float64(rank+1) / float64(count+1)
+	}
+}
+
+// portOrderBarycenter computes the average layer-order position of nodes
+// connected to a port. Uses the order of connected nodes within their layers
+// (since during crossing minimization we don't have X/Y coordinates yet).
+func (s *layoutState) portOrderBarycenter(nodeID, portID string) float64 {
+	sum := 0.0
+	count := 0
+
+	for _, edge := range s.edges {
+		if edge.key.from == nodeID && edge.sourcePort == portID {
+			if connNode := s.nodes[edge.key.to]; connNode != nil {
+				sum += float64(connNode.order)
+				count++
+			}
+		}
+		if edge.key.to == nodeID && edge.targetPort == portID {
+			if connNode := s.nodes[edge.key.from]; connNode != nil {
+				sum += float64(connNode.order)
+				count++
+			}
+		}
+	}
+
+	if count == 0 {
+		return 0
+	}
+	return sum / float64(count)
 }
 
 // adjustForPortPositions refines ordering of a layer considering port offsets.

@@ -2,6 +2,7 @@ package posit
 
 import (
 	"math"
+	"sort"
 	"testing"
 )
 
@@ -200,6 +201,507 @@ func TestPort_FallbackToIntersection(t *testing.T) {
 	}
 	if len(edge.Points) < 2 {
 		t.Error("Edge should have points even with nonexistent port")
+	}
+}
+
+// ==================== Port Constraint Tests ====================
+
+func TestPortFixedOrder(t *testing.T) {
+	// 3 ports declared with explicit order on the right side.
+	// Verify computed offsets are evenly distributed.
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{
+		Width: 100, Height: 90,
+		Ports: []PortOptions{
+			{ID: "p1", Side: Right, Constraint: PortFixedOrder, Order: 1},
+			{ID: "p2", Side: Right, Constraint: PortFixedOrder, Order: 2},
+			{ID: "p3", Side: Right, Constraint: PortFixedOrder, Order: 3},
+		},
+	})
+	g.AddNode("B1", NodeOptions{Width: 50, Height: 30})
+	g.AddNode("B2", NodeOptions{Width: 50, Height: 30})
+	g.AddNode("B3", NodeOptions{Width: 50, Height: 30})
+
+	g.MustAddEdge("A", "B1", EdgeOptions{SourcePort: "p1"})
+	g.MustAddEdge("A", "B2", EdgeOptions{SourcePort: "p2"})
+	g.MustAddEdge("A", "B3", EdgeOptions{SourcePort: "p3"})
+
+	layout := g.Layout()
+
+	nodeA := layout.Nodes["A"]
+	if nodeA.Ports == nil {
+		t.Fatal("Expected Ports map to be populated for PortFixedOrder node")
+	}
+
+	// Expect evenly distributed: 90 * 1/4 = 22.5, 90 * 2/4 = 45, 90 * 3/4 = 67.5
+	expectedOffsets := map[string]float64{
+		"p1": 22.5,
+		"p2": 45.0,
+		"p3": 67.5,
+	}
+
+	for id, expected := range expectedOffsets {
+		port, ok := nodeA.Ports[id]
+		if !ok {
+			t.Errorf("Port %q not found in layout output", id)
+			continue
+		}
+		if math.Abs(port.Offset-expected) > 0.01 {
+			t.Errorf("Port %q: expected offset %.1f, got %.1f", id, expected, port.Offset)
+		}
+		if port.Side != Right {
+			t.Errorf("Port %q: expected side Right, got %v", id, port.Side)
+		}
+	}
+
+	// Verify order is preserved: p1 < p2 < p3
+	if nodeA.Ports["p1"].Offset >= nodeA.Ports["p2"].Offset {
+		t.Error("Port p1 should have smaller offset than p2")
+	}
+	if nodeA.Ports["p2"].Offset >= nodeA.Ports["p3"].Offset {
+		t.Error("Port p2 should have smaller offset than p3")
+	}
+}
+
+func TestPortFixedSide(t *testing.T) {
+	// 3 ports on the right side with PortFixedSide constraint.
+	// Connected nodes are at known Y positions. Verify optimal reordering.
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{
+		Width: 100, Height: 90,
+		Ports: []PortOptions{
+			{ID: "p1", Side: Right, Constraint: PortFixedSide},
+			{ID: "p2", Side: Right, Constraint: PortFixedSide},
+			{ID: "p3", Side: Right, Constraint: PortFixedSide},
+		},
+	})
+	g.AddNode("B1", NodeOptions{Width: 50, Height: 30})
+	g.AddNode("B2", NodeOptions{Width: 50, Height: 30})
+	g.AddNode("B3", NodeOptions{Width: 50, Height: 30})
+
+	g.MustAddEdge("A", "B1", EdgeOptions{SourcePort: "p1"})
+	g.MustAddEdge("A", "B2", EdgeOptions{SourcePort: "p2"})
+	g.MustAddEdge("A", "B3", EdgeOptions{SourcePort: "p3"})
+
+	layout := g.Layout()
+
+	nodeA := layout.Nodes["A"]
+	if nodeA.Ports == nil {
+		t.Fatal("Expected Ports map to be populated for PortFixedSide node")
+	}
+
+	// All 3 ports should be present with computed offsets
+	if len(nodeA.Ports) != 3 {
+		t.Fatalf("Expected 3 ports, got %d", len(nodeA.Ports))
+	}
+
+	// Verify offsets are evenly distributed (regardless of order)
+	offsets := []float64{
+		nodeA.Ports["p1"].Offset,
+		nodeA.Ports["p2"].Offset,
+		nodeA.Ports["p3"].Offset,
+	}
+	for _, o := range offsets {
+		if o <= 0 || o >= 90 {
+			t.Errorf("Port offset %.1f should be between 0 and 90 (exclusive)", o)
+		}
+	}
+
+	// Verify spacing is even: all gaps should be equal
+	// Sort offsets to check spacing
+	sorted := make([]float64, 3)
+	copy(sorted, offsets)
+	sort.Float64s(sorted)
+	gap1 := sorted[1] - sorted[0]
+	gap2 := sorted[2] - sorted[1]
+	if math.Abs(gap1-gap2) > 0.01 {
+		t.Errorf("Port spacing should be even: gaps are %.1f and %.1f", gap1, gap2)
+	}
+}
+
+func TestPortFixedPosUnchanged(t *testing.T) {
+	// Existing FIXED_POS behavior should remain unchanged.
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{
+		Width: 100, Height: 100,
+		Ports: []PortOptions{
+			{ID: "out-1", Side: Bottom, Offset: 25},
+			{ID: "out-2", Side: Bottom, Offset: 75},
+		},
+	})
+	g.AddNode("B", NodeOptions{
+		Width: 100, Height: 100,
+		Ports: []PortOptions{
+			{ID: "in-1", Side: Top, Offset: 50},
+		},
+	})
+	g.MustAddEdge("A", "B", EdgeOptions{SourcePort: "out-1", TargetPort: "in-1"})
+
+	layout := g.Layout()
+
+	// PortFixedPos nodes should NOT have Ports map populated
+	nodeA := layout.Nodes["A"]
+	if nodeA.Ports != nil {
+		t.Error("PortFixedPos nodes should not have Ports in output")
+	}
+
+	// Verify edge still uses the exact offset
+	edge, ok := layout.Edge("A", "B")
+	if !ok {
+		t.Fatal("Edge A->B not found")
+	}
+	if len(edge.Points) < 2 {
+		t.Fatal("Edge should have at least 2 points")
+	}
+
+	// Source port is on bottom side at offset 25
+	startPt := edge.Points[0]
+	expectedX := layout.Nodes["A"].X + 25
+	expectedY := layout.Nodes["A"].Y + 100
+	if math.Abs(startPt.X-expectedX) > 0.01 || math.Abs(startPt.Y-expectedY) > 0.01 {
+		t.Errorf("Edge start should be at port (%.1f, %.1f), got (%.1f, %.1f)",
+			expectedX, expectedY, startPt.X, startPt.Y)
+	}
+}
+
+func TestPortLayoutOutput(t *testing.T) {
+	// Verify PortLayout appears in output for computed ports and not for fixed.
+	g := NewGraph()
+	g.AddNode("fixed", NodeOptions{
+		Width: 100, Height: 60,
+		Ports: []PortOptions{
+			{ID: "p1", Side: Right, Offset: 30},
+		},
+	})
+	g.AddNode("computed", NodeOptions{
+		Width: 100, Height: 60,
+		Ports: []PortOptions{
+			{ID: "p1", Side: Right, Constraint: PortFixedOrder, Order: 1},
+			{ID: "p2", Side: Right, Constraint: PortFixedOrder, Order: 2},
+		},
+	})
+	g.AddNode("target1", NodeOptions{Width: 50, Height: 30})
+	g.AddNode("target2", NodeOptions{Width: 50, Height: 30})
+
+	g.MustAddEdge("fixed", "target1", EdgeOptions{SourcePort: "p1"})
+	g.MustAddEdge("computed", "target1", EdgeOptions{SourcePort: "p1"})
+	g.MustAddEdge("computed", "target2", EdgeOptions{SourcePort: "p2"})
+
+	layout := g.Layout()
+
+	// "fixed" node should NOT have Ports
+	if layout.Nodes["fixed"].Ports != nil {
+		t.Error("PortFixedPos node should not have Ports in output")
+	}
+
+	// "computed" node SHOULD have Ports
+	computedNode := layout.Nodes["computed"]
+	if computedNode.Ports == nil {
+		t.Fatal("PortFixedOrder node should have Ports in output")
+	}
+	if len(computedNode.Ports) != 2 {
+		t.Fatalf("Expected 2 ports in output, got %d", len(computedNode.Ports))
+	}
+
+	// Verify structure
+	p1 := computedNode.Ports["p1"]
+	if p1.ID != "p1" || p1.Side != Right {
+		t.Errorf("Port p1: expected ID='p1' Side=Right, got ID=%q Side=%v", p1.ID, p1.Side)
+	}
+	p2 := computedNode.Ports["p2"]
+	if p2.ID != "p2" || p2.Side != Right {
+		t.Errorf("Port p2: expected ID='p2' Side=Right, got ID=%q Side=%v", p2.ID, p2.Side)
+	}
+
+	// p1 should be before p2 (lower offset)
+	if p1.Offset >= p2.Offset {
+		t.Errorf("Port p1 offset (%.1f) should be less than p2 offset (%.1f)", p1.Offset, p2.Offset)
+	}
+}
+
+func TestPortFixedOrder_TopBottom(t *testing.T) {
+	// Test PortFixedOrder on Top/Bottom sides (uses node width).
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{
+		Width: 120, Height: 60,
+		Ports: []PortOptions{
+			{ID: "p1", Side: Bottom, Constraint: PortFixedOrder, Order: 1},
+			{ID: "p2", Side: Bottom, Constraint: PortFixedOrder, Order: 2},
+		},
+	})
+	g.AddNode("B1", NodeOptions{Width: 50, Height: 30})
+	g.AddNode("B2", NodeOptions{Width: 50, Height: 30})
+
+	g.MustAddEdge("A", "B1", EdgeOptions{SourcePort: "p1"})
+	g.MustAddEdge("A", "B2", EdgeOptions{SourcePort: "p2"})
+
+	layout := g.Layout()
+
+	nodeA := layout.Nodes["A"]
+	if nodeA.Ports == nil {
+		t.Fatal("Expected Ports map for PortFixedOrder node")
+	}
+
+	// Width=120, 2 ports: offset = 120*1/3=40, 120*2/3=80
+	p1 := nodeA.Ports["p1"]
+	p2 := nodeA.Ports["p2"]
+	if math.Abs(p1.Offset-40.0) > 0.01 {
+		t.Errorf("Port p1: expected offset 40, got %.1f", p1.Offset)
+	}
+	if math.Abs(p2.Offset-80.0) > 0.01 {
+		t.Errorf("Port p2: expected offset 80, got %.1f", p2.Offset)
+	}
+}
+
+func TestPortMixed_FixedPosAndFixedOrder(t *testing.T) {
+	// A node can have both PortFixedPos and PortFixedOrder ports.
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{
+		Width: 100, Height: 90,
+		Ports: []PortOptions{
+			{ID: "fixed", Side: Right, Offset: 10}, // PortFixedPos (default)
+			{ID: "auto1", Side: Right, Constraint: PortFixedOrder, Order: 1},
+			{ID: "auto2", Side: Right, Constraint: PortFixedOrder, Order: 2},
+		},
+	})
+	g.AddNode("B1", NodeOptions{Width: 50, Height: 30})
+	g.AddNode("B2", NodeOptions{Width: 50, Height: 30})
+	g.AddNode("B3", NodeOptions{Width: 50, Height: 30})
+
+	g.MustAddEdge("A", "B1", EdgeOptions{SourcePort: "fixed"})
+	g.MustAddEdge("A", "B2", EdgeOptions{SourcePort: "auto1"})
+	g.MustAddEdge("A", "B3", EdgeOptions{SourcePort: "auto2"})
+
+	layout := g.Layout()
+
+	nodeA := layout.Nodes["A"]
+	// Should have Ports for auto1 and auto2, but not for fixed
+	if nodeA.Ports == nil {
+		t.Fatal("Expected Ports map for node with computed ports")
+	}
+	if _, ok := nodeA.Ports["fixed"]; ok {
+		t.Error("PortFixedPos port should not appear in Ports output")
+	}
+	if _, ok := nodeA.Ports["auto1"]; !ok {
+		t.Error("PortFixedOrder port auto1 should appear in Ports output")
+	}
+	if _, ok := nodeA.Ports["auto2"]; !ok {
+		t.Error("PortFixedOrder port auto2 should appear in Ports output")
+	}
+
+	// Verify auto ports are ordered
+	if nodeA.Ports["auto1"].Offset >= nodeA.Ports["auto2"].Offset {
+		t.Error("auto1 should have lower offset than auto2")
+	}
+}
+
+func TestPortFree_SideSelection(t *testing.T) {
+	// Node A in layer 0 with PortFree ports connecting to B (layer 1, below).
+	// In a top-to-bottom layout, B is below A, so ports should end up on Bottom.
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{
+		Width: 100, Height: 60,
+		Ports: []PortOptions{
+			{ID: "p1", Constraint: PortFree},
+		},
+	})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 60})
+	g.MustAddEdge("A", "B", EdgeOptions{SourcePort: "p1"})
+
+	layout := g.Layout()
+
+	nodeA := layout.Nodes["A"]
+	if nodeA.Ports == nil {
+		t.Fatal("Expected Ports map for PortFree node")
+	}
+	p1 := nodeA.Ports["p1"]
+	// In top-to-bottom layout, B is below A → port on Bottom
+	if p1.Side != Bottom {
+		t.Errorf("Expected port on Bottom (connected node is below), got %v", p1.Side)
+	}
+}
+
+func TestPortFree_HorizontalAxis(t *testing.T) {
+	// PortFree with PortAxisHorizontal: port should be on Left or Right only.
+	// A and B are in the same layer (use RankGroup to force), B is to the right.
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{
+		Width: 100, Height: 60,
+		RankGroup: "same",
+		Ports: []PortOptions{
+			{ID: "p1", Constraint: PortFree, Axis: PortAxisHorizontal},
+		},
+	})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 60, RankGroup: "same"})
+	// Need a third node to create a valid graph with edges
+	g.AddNode("root", NodeOptions{Width: 50, Height: 30})
+	g.MustAddEdge("root", "A")
+	g.MustAddEdge("root", "B")
+	g.MustAddEdge("A", "B", EdgeOptions{SourcePort: "p1"})
+
+	layout := g.Layout()
+
+	nodeA := layout.Nodes["A"]
+	if nodeA.Ports == nil {
+		t.Fatal("Expected Ports map for PortFree node")
+	}
+	p1 := nodeA.Ports["p1"]
+	// With PortAxisHorizontal, side must be Left or Right
+	if p1.Side != Left && p1.Side != Right {
+		t.Errorf("PortAxisHorizontal: expected Left or Right, got %v", p1.Side)
+	}
+}
+
+func TestPortFree_MultiplePorts(t *testing.T) {
+	// Node with multiple PortFree ports connecting to nodes in different directions.
+	// With PortAxisHorizontal, all should be Left or Right.
+	// Each port should face toward its connected node.
+	g := NewGraph()
+	g.AddNode("center", NodeOptions{Width: 100, Height: 90,
+		Ports: []PortOptions{
+			{ID: "p1", Constraint: PortFree, Axis: PortAxisHorizontal},
+			{ID: "p2", Constraint: PortFree, Axis: PortAxisHorizontal},
+			{ID: "p3", Constraint: PortFree, Axis: PortAxisHorizontal},
+		},
+	})
+	g.AddNode("target1", NodeOptions{Width: 80, Height: 40})
+	g.AddNode("target2", NodeOptions{Width: 80, Height: 40})
+	g.AddNode("target3", NodeOptions{Width: 80, Height: 40})
+
+	g.MustAddEdge("center", "target1", EdgeOptions{SourcePort: "p1"})
+	g.MustAddEdge("center", "target2", EdgeOptions{SourcePort: "p2"})
+	g.MustAddEdge("center", "target3", EdgeOptions{SourcePort: "p3"})
+
+	layout := g.Layout()
+
+	centerNode := layout.Nodes["center"]
+	if centerNode.Ports == nil {
+		t.Fatal("Expected Ports map for PortFree node")
+	}
+
+	// All ports should be Left or Right (PortAxisHorizontal)
+	for id, port := range centerNode.Ports {
+		if port.Side != Left && port.Side != Right {
+			t.Errorf("Port %q: expected Left or Right, got %v", id, port.Side)
+		}
+	}
+
+	// Each port should face toward its connected node
+	centerX := centerNode.X + centerNode.Width/2
+	for _, portID := range []string{"p1", "p2", "p3"} {
+		port := centerNode.Ports[portID]
+		// Find connected node
+		var targetID string
+		switch portID {
+		case "p1":
+			targetID = "target1"
+		case "p2":
+			targetID = "target2"
+		case "p3":
+			targetID = "target3"
+		}
+		targetNode := layout.Nodes[targetID]
+		targetX := targetNode.X + targetNode.Width/2
+
+		if targetX > centerX && port.Side != Right {
+			t.Errorf("Port %s: target is right of center, expected Right, got %v", portID, port.Side)
+		}
+		if targetX < centerX && port.Side != Left {
+			t.Errorf("Port %s: target is left of center, expected Left, got %v", portID, port.Side)
+		}
+	}
+}
+
+func TestPortFree_SchemaPattern(t *testing.T) {
+	// Schema diagram pattern: Users.id connects to Orders.user_id.
+	// Both use PortFree with PortAxisHorizontal.
+	// If Users is to the left of Orders, Users.id should be on Right,
+	// Orders.user_id should be on Left.
+	g := NewGraph()
+	g.AddNode("users", NodeOptions{
+		Width: 150, Height: 90,
+		RankGroup: "tables",
+		Ports: []PortOptions{
+			{ID: "id", Constraint: PortFree, Axis: PortAxisHorizontal},
+		},
+	})
+	g.AddNode("orders", NodeOptions{
+		Width: 150, Height: 90,
+		RankGroup: "tables",
+		Ports: []PortOptions{
+			{ID: "user_id", Constraint: PortFree, Axis: PortAxisHorizontal},
+		},
+	})
+
+	// Need an edge to create the graph structure and a root for valid layout
+	g.AddNode("root", NodeOptions{Width: 50, Height: 30})
+	g.MustAddEdge("root", "users")
+	g.MustAddEdge("root", "orders")
+	g.MustAddEdge("users", "orders", EdgeOptions{SourcePort: "id", TargetPort: "user_id"})
+
+	layout := g.Layout()
+
+	usersNode := layout.Nodes["users"]
+	ordersNode := layout.Nodes["orders"]
+
+	if usersNode.Ports == nil || ordersNode.Ports == nil {
+		t.Fatal("Expected Ports maps for PortFree nodes")
+	}
+
+	// Determine which node is to the left
+	usersPort := usersNode.Ports["id"]
+	ordersPort := ordersNode.Ports["user_id"]
+
+	if usersNode.X < ordersNode.X {
+		// Users is left of Orders
+		if usersPort.Side != Right {
+			t.Errorf("Users.id: expected Right (Users is left of Orders), got %v", usersPort.Side)
+		}
+		if ordersPort.Side != Left {
+			t.Errorf("Orders.user_id: expected Left (Orders is right of Users), got %v", ordersPort.Side)
+		}
+	} else {
+		// Orders is left of Users
+		if usersPort.Side != Left {
+			t.Errorf("Users.id: expected Left (Users is right of Orders), got %v", usersPort.Side)
+		}
+		if ordersPort.Side != Right {
+			t.Errorf("Orders.user_id: expected Right (Orders is left of Users), got %v", ordersPort.Side)
+		}
+	}
+
+	// Regardless of order, the ports should face each other
+	if usersPort.Side == ordersPort.Side {
+		t.Error("Ports should face each other (one Left, one Right)")
+	}
+}
+
+func TestPortFree_VerticalAxis(t *testing.T) {
+	// PortFree with PortAxisVertical: port should be on Top or Bottom only.
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{
+		Width: 100, Height: 60,
+		Ports: []PortOptions{
+			{ID: "p1", Constraint: PortFree, Axis: PortAxisVertical},
+		},
+	})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 60})
+	g.MustAddEdge("A", "B", EdgeOptions{SourcePort: "p1"})
+
+	layout := g.Layout()
+
+	nodeA := layout.Nodes["A"]
+	if nodeA.Ports == nil {
+		t.Fatal("Expected Ports map for PortFree node")
+	}
+	p1 := nodeA.Ports["p1"]
+	// PortAxisVertical: must be Top or Bottom
+	if p1.Side != Top && p1.Side != Bottom {
+		t.Errorf("PortAxisVertical: expected Top or Bottom, got %v", p1.Side)
+	}
+	// B is below A in top-to-bottom layout → Bottom
+	if p1.Side != Bottom {
+		t.Errorf("Expected Bottom (B is below A), got %v", p1.Side)
 	}
 }
 

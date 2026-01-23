@@ -249,7 +249,37 @@ const (
 	Right
 )
 
-// PortOptions specifies a fixed connection point on a node.
+// PortConstraint specifies how a port's position is determined.
+type PortConstraint int
+
+const (
+	// PortFixedPos uses the exact Offset specified (current behavior, default).
+	PortFixedPos PortConstraint = iota
+	// PortFixedSide keeps the port on its declared Side but computes the optimal
+	// offset and order to minimize edge crossings.
+	PortFixedSide
+	// PortFixedOrder keeps the port on its declared Side in declared relative order
+	// but computes evenly-distributed offsets.
+	PortFixedOrder
+	// PortFree allows the algorithm to choose both the side and offset.
+	// The side is selected based on the position of the connected node.
+	// Use the Axis field to restrict which sides are considered.
+	PortFree
+)
+
+// PortAxis constrains which sides PortFree considers.
+type PortAxis int
+
+const (
+	// PortAxisAny allows any side (default).
+	PortAxisAny PortAxis = iota
+	// PortAxisHorizontal restricts to Left or Right.
+	PortAxisHorizontal
+	// PortAxisVertical restricts to Top or Bottom.
+	PortAxisVertical
+)
+
+// PortOptions specifies a connection point on a node.
 type PortOptions struct {
 	// ID uniquely identifies this port within the node (e.g., "in-1", "out-2").
 	ID string
@@ -258,7 +288,16 @@ type PortOptions struct {
 	// Offset is the distance from the node origin along the side.
 	// For Top/Bottom sides: offset from left edge.
 	// For Left/Right sides: offset from top edge.
+	// Used only for PortFixedPos (default constraint).
 	Offset float64
+	// Order specifies relative ordering for PortFixedOrder constraint.
+	// Lower values are placed first (top for Left/Right sides, left for Top/Bottom sides).
+	Order int
+	// Constraint controls how the port position is determined (default: PortFixedPos).
+	Constraint PortConstraint
+	// Axis restricts which sides PortFree considers (default: PortAxisAny).
+	// Only used when Constraint is PortFree.
+	Axis PortAxis
 	// Width is the optional width of the port attachment area (default: 0, point).
 	// When non-zero, edge endpoints are clipped to the port rectangle boundary.
 	Width float64
@@ -340,11 +379,21 @@ type Position struct {
 	Y float64
 }
 
+// PortLayout contains the computed position for a port after layout.
+type PortLayout struct {
+	ID     string
+	Side   Side
+	Offset float64 // Computed offset along the side
+}
+
 // NodeLayout contains position and dimensions for a laid-out node.
 type NodeLayout struct {
 	Position
 	Width  float64
 	Height float64
+	// Ports contains computed port positions for nodes with PortFixedSide or
+	// PortFixedOrder constraints. Nil for nodes with only PortFixedPos ports.
+	Ports map[string]PortLayout
 }
 
 // EdgePoint represents a point along an edge path.
@@ -650,7 +699,10 @@ func (g *Graph) LayoutWithError(opts ...Options) (*Layout, error) {
 	// Phase 5: Assign X/Y coordinates
 	state.assignCoordinates()
 
-	// Phase 5b: Pack disconnected components
+	// Phase 5b: Compute auto port offsets (PortFixedSide, PortFixedOrder)
+	state.computePortOffsets()
+
+	// Phase 5c: Pack disconnected components
 	state.packComponents()
 
 	// Phase 6: Route edges and restore reversed edges
@@ -757,6 +809,7 @@ func (g *Graph) IncrementalLayout(base *Layout, changes IncrementalOptions, opts
 		state.assignCoordinates()
 	}
 
+	state.computePortOffsets()
 	state.packComponents()
 	state.routeEdges()
 	state.undoDirectionAdjustment()

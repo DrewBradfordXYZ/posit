@@ -128,7 +128,8 @@ func (s *layoutState) feasibleTree() *spanningTree {
 
 	// Grow tree until all nodes included
 	for tree.nodeCount() < len(s.nodes) {
-		// Find minimum slack edge connecting tree to non-tree
+		// Find minimum slack edge connecting tree to non-tree.
+		// Break ties deterministically by comparing edgeKey fields.
 		var bestEdge edgeKey
 		minSlack := math.MaxInt
 		treeToNonTree := true
@@ -143,7 +144,7 @@ func (s *layoutState) feasibleTree() *spanningTree {
 			}
 
 			slack := s.slack(key)
-			if slack < minSlack {
+			if slack < minSlack || (slack == minSlack && edgeKeyLess(key, bestEdge)) {
 				minSlack = slack
 				bestEdge = key
 				treeToNonTree = inTreeFrom
@@ -153,7 +154,8 @@ func (s *layoutState) feasibleTree() *spanningTree {
 
 		if !found {
 			// Graph might be disconnected - find any non-tree node
-			for id := range s.nodes {
+			// Use the pre-sorted nodeIDs for deterministic selection.
+			for _, id := range nodeIDs {
 				if !tree.hasNode(id) {
 					tree.addNode(id)
 					break

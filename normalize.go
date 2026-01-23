@@ -1,17 +1,24 @@
 package posit
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // addDummyNodes splits edges that span multiple layers.
 // Returns the number of dummy nodes created.
 func (s *layoutState) addDummyNodes() int {
 	dummyCount := 0
 
-	// Collect edges to process (iterate over copy to allow modification)
+	// Collect edges to process (iterate over copy to allow modification).
+	// Sort for deterministic dummy node IDs across runs.
 	edgesToProcess := make([]edgeKey, 0, len(s.edges))
 	for key := range s.edges {
 		edgesToProcess = append(edgesToProcess, key)
 	}
+	sort.Slice(edgesToProcess, func(i, j int) bool {
+		return edgeKeyLess(edgesToProcess[i], edgesToProcess[j])
+	})
 
 	for _, key := range edgesToProcess {
 		count := s.normalizeEdge(key)

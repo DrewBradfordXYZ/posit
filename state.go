@@ -9,6 +9,17 @@ type edgeKey struct {
 	id   string // for multi-edge support
 }
 
+// edgeKeyLess provides deterministic ordering for edgeKeys.
+func edgeKeyLess(a, b edgeKey) bool {
+	if a.from != b.from {
+		return a.from < b.from
+	}
+	if a.to != b.to {
+		return a.to < b.to
+	}
+	return a.id < b.id
+}
+
 // layoutNode holds internal state for a node during layout.
 type layoutNode struct {
 	id     string

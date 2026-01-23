@@ -1,6 +1,8 @@
 package posit
 
 import (
+	"fmt"
+	"math/rand"
 	"sort"
 	"testing"
 )
@@ -252,5 +254,84 @@ func TestDuplicateEdges_AdjacencyOnce(t *testing.T) {
 	predecessors := state.predecessors["B"]
 	if len(predecessors) != 1 {
 		t.Errorf("B has %d predecessors, want 1", len(predecessors))
+	}
+}
+
+// TestLayoutDeterminism verifies that Layout produces identical results
+// across multiple invocations on the same graph. Go map iteration is
+// randomized per-execution, so this catches any order-dependent code paths.
+func TestLayoutDeterminism(t *testing.T) {
+	// Build a non-trivial graph with cycles (exercises FAS + simplex)
+	buildGraph := func() *Graph {
+		g := NewGraph()
+		rng := rand.New(rand.NewSource(99))
+		n := 50
+		for i := 0; i < n; i++ {
+			g.AddNode(fmt.Sprintf("n%d", i), NodeOptions{
+				Width:  float64(40 + rng.Intn(60)),
+				Height: float64(20 + rng.Intn(40)),
+			})
+		}
+		// Add forward edges (creates multi-layer spans)
+		for i := 0; i < n-1; i++ {
+			skip := 1 + rng.Intn(3)
+			target := i + skip
+			if target >= n {
+				target = n - 1
+			}
+			g.AddEdge(fmt.Sprintf("n%d", i), fmt.Sprintf("n%d", target))
+		}
+		// Add backward edges (creates cycles requiring FAS)
+		for i := 0; i < 10; i++ {
+			from := 10 + rng.Intn(n-10)
+			to := rng.Intn(from)
+			g.AddEdge(fmt.Sprintf("n%d", from), fmt.Sprintf("n%d", to))
+		}
+		return g
+	}
+
+	const runs = 5
+	var layouts [runs]*Layout
+
+	for i := 0; i < runs; i++ {
+		g := buildGraph()
+		layouts[i] = g.Layout(Options{})
+	}
+
+	// Compare all runs against the first
+	ref := layouts[0]
+	for run := 1; run < runs; run++ {
+		got := layouts[run]
+
+		// Compare node positions
+		for id, refNode := range ref.Nodes {
+			gotNode, ok := got.Nodes[id]
+			if !ok {
+				t.Fatalf("run %d: missing node %s", run, id)
+			}
+			if refNode.X != gotNode.X || refNode.Y != gotNode.Y {
+				t.Fatalf("run %d: node %s position differs: (%.1f,%.1f) vs (%.1f,%.1f)",
+					run, id, refNode.X, refNode.Y, gotNode.X, gotNode.Y)
+			}
+		}
+
+		// Compare edge points
+		for id, refEdge := range ref.Edges {
+			gotEdge, ok := got.Edges[id]
+			if !ok {
+				t.Fatalf("run %d: missing edge %s", run, id)
+			}
+			if len(refEdge.Points) != len(gotEdge.Points) {
+				t.Fatalf("run %d: edge %s has %d points, want %d",
+					run, id, len(gotEdge.Points), len(refEdge.Points))
+			}
+			for j, rp := range refEdge.Points {
+				gp := gotEdge.Points[j]
+				if rp.X != gp.X || rp.Y != gp.Y {
+					t.Fatalf("run %d: edge %s point[%d] differs: (%.1f,%.1f) vs (%.1f,%.1f)",
+						run, id, j, rp.X, rp.Y, gp.X, gp.Y)
+				}
+			}
+		}
 	}
 }

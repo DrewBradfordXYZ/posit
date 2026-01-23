@@ -266,14 +266,18 @@ type Options struct {
 4. Route: horizontal → channel → vertical → channel → horizontal to target
 5. Minimize bends by choosing the shortest-path channel assignment
 
-### Complexity
+### Algorithm Choice
 
-Full Tamassia-style bend minimization is a significant algorithm. A pragmatic approach:
-- Use dummy node X positions as initial channel columns
+Tamassia's algorithm (1987) solves optimal bend minimization for general orthogonal drawing via min-cost network flow. It's not appropriate here — it assumes a planar embedding and ignores layer structure.
+
+For layered graphs, **channel routing** is the correct algorithm. Posit already knows node layers and X positions, providing natural routing channels between node columns. Channel routing exploits this structure directly:
+
+- Use spaces between node columns as vertical channels
+- Use spaces between layers as horizontal channels
 - Assign edges to channels with offset spacing to prevent overlaps
 - Route around nodes that fall within the channel
 
-This produces good results for most graphs. The channel assignment is the key server-side advantage — it requires seeing all edges simultaneously.
+The channel assignment is the key server-side advantage — it requires seeing all edges simultaneously to space them correctly.
 
 ---
 

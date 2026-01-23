@@ -12,6 +12,10 @@ type layoutNode struct {
 	width  float64
 	height float64
 
+	// Input order (from Graph.AddNode calls) for deterministic initial ordering.
+	// Used by buildLayers() to preserve user-defined node sequence.
+	insertOrder int
+
 	// Phase 2 output
 	rank int
 
@@ -85,9 +89,10 @@ func newLayoutState(g *Graph, opts Options) *layoutState {
 	// Copy nodes
 	for id, n := range g.nodes {
 		s.nodes[id] = &layoutNode{
-			id:     id,
-			width:  n.width,
-			height: n.height,
+			id:          id,
+			width:       n.width,
+			height:      n.height,
+			insertOrder: n.insertOrder,
 		}
 		// Initialize empty adjacency lists
 		s.successors[id] = []string{}

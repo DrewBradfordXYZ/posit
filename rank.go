@@ -133,12 +133,16 @@ func (s *layoutState) buildLayers() {
 		s.layers[i] = make([]string, 0)
 	}
 
-	// Sort node IDs for deterministic ordering
+	// Sort by insertion order (preserves AddNode() call sequence).
+	// This gives users control over initial layer ordering, which the
+	// barycenter crossing minimization uses as a tiebreaker via stable sort.
 	nodeIDs := make([]string, 0, len(s.nodes))
 	for id := range s.nodes {
 		nodeIDs = append(nodeIDs, id)
 	}
-	sort.Strings(nodeIDs)
+	sort.Slice(nodeIDs, func(i, j int) bool {
+		return s.nodes[nodeIDs[i]].insertOrder < s.nodes[nodeIDs[j]].insertOrder
+	})
 
 	// Assign nodes to layers
 	for _, id := range nodeIDs {

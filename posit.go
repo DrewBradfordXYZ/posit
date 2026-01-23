@@ -157,15 +157,21 @@ type Options struct {
 
 	// Acyclicer for cycle removal (default: DFSAcyclicer)
 	Acyclicer Acyclicer
+
+	// BKThreshold is the node count above which coordinate assignment
+	// switches from Brandes-Köpf (optimal but slower) to simple centering.
+	// Default: 100. Set higher if you want better alignment for larger graphs.
+	BKThreshold int
 }
 
 // DefaultOptions returns sensible defaults for layout.
 func DefaultOptions() Options {
 	return Options{
-		Direction: TopToBottom,
-		NodeSep:   50,
-		RankSep:   100,
-		Algorithm: LongestPath,
+		Direction:   TopToBottom,
+		NodeSep:     50,
+		RankSep:     100,
+		Algorithm:   LongestPath,
+		BKThreshold: 100,
 	}
 }
 
@@ -256,15 +262,17 @@ func (l *Layout) Edge(from, to string) (EdgeLayout, bool) {
 
 // Graph represents a directed graph to be laid out.
 type Graph struct {
-	nodes   map[string]*node
-	edges   []*edge
-	edgeSet map[[2]string]bool // for O(1) edge lookup
+	nodes     map[string]*node
+	edges     []*edge
+	edgeSet   map[[2]string]bool // for O(1) edge lookup
+	nextOrder int               // tracks insertion order for deterministic layout
 }
 
 type node struct {
-	id     string
-	width  float64
-	height float64
+	id          string
+	width       float64
+	height      float64
+	insertOrder int // preserves AddNode() call order for initial layer ordering
 }
 
 type edge struct {
@@ -285,12 +293,19 @@ func NewGraph() *Graph {
 }
 
 // AddNode adds a node with the given ID and dimensions.
-// If a node with the same ID exists, it is replaced.
+// If a node with the same ID exists, it is replaced (preserving its insertion order).
 func (g *Graph) AddNode(id string, opts NodeOptions) {
+	order := g.nextOrder
+	if existing, ok := g.nodes[id]; ok {
+		order = existing.insertOrder // preserve original order on replace
+	} else {
+		g.nextOrder++
+	}
 	g.nodes[id] = &node{
-		id:     id,
-		width:  opts.Width,
-		height: opts.Height,
+		id:          id,
+		width:       opts.Width,
+		height:      opts.Height,
+		insertOrder: order,
 	}
 }
 

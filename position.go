@@ -14,8 +14,14 @@ const maxBlockIterations = 10000
 func (s *layoutState) assignCoordinates() {
 	s.assignYCoordinates()
 
-	// Choose X assignment method based on graph size
-	if len(s.nodes) > 100 {
+	// Choose X assignment method based on graph size.
+	// BKThreshold controls when to switch from Brandes-Köpf (optimal)
+	// to simple centering (faster for large graphs).
+	threshold := s.opts.BKThreshold
+	if threshold <= 0 {
+		threshold = 100 // fallback default
+	}
+	if len(s.nodes) > threshold {
 		s.assignXCoordinatesSimple() // Fast for large graphs
 	} else {
 		s.assignXCoordinatesBK() // Optimal for smaller graphs

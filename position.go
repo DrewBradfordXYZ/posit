@@ -217,29 +217,72 @@ func (s *layoutState) reverseLayerOrders(layers [][]string) [][]string {
 }
 
 // findType1Conflicts identifies conflicts where aligning would cross inner segments.
+// Adjacent-layer detection is sufficient because after normalization all edges span
+// exactly one layer — an edge between layers k-1 and k can only cross inner segments
+// at that same layer pair. This matches the Brandes-Köpf paper specification.
 func (s *layoutState) findType1Conflicts() map[conflictKey]bool {
 	conflicts := make(map[conflictKey]bool)
 
+	// Precompute all inner segments (dummy→dummy edges) grouped by layer pair.
+	// Each segment is stored as the order positions of its upper and lower dummy nodes.
+	type innerSegment struct {
+		upperPos int
+		lowerPos int
+	}
+	segmentsByRank := make(map[int][]innerSegment) // key = lower layer rank
+
+	for id, node := range s.nodes {
+		if !node.isDummy {
+			continue
+		}
+		for _, succID := range s.successors[id] {
+			succNode := s.nodes[succID]
+			if succNode == nil || !succNode.isDummy {
+				continue
+			}
+			if succNode.rank == node.rank+1 {
+				segmentsByRank[succNode.rank] = append(segmentsByRank[succNode.rank], innerSegment{
+					upperPos: node.order,
+					lowerPos: succNode.order,
+				})
+			}
+		}
+	}
+
+	// For each layer pair, check if non-inner edges cross any inner segment
 	for rank := 1; rank < len(s.layers); rank++ {
-		prevLayer := s.layers[rank-1]
+		segments := segmentsByRank[rank]
+		if len(segments) == 0 {
+			continue
+		}
+
 		layer := s.layers[rank]
+		for _, v := range layer {
+			vNode := s.nodes[v]
+			if vNode == nil {
+				continue
+			}
+			vPos := vNode.order
 
-		// Find inner segment ranges (segments between dummy nodes)
-		innerSegments := s.findInnerSegments(prevLayer, layer)
+			for _, u := range s.predecessors[v] {
+				uNode := s.nodes[u]
+				if uNode == nil || uNode.rank != rank-1 {
+					continue
+				}
+				uPos := uNode.order
 
-		// Mark conflicts
-		for _, seg := range innerSegments {
-			// Any edge crossing this inner segment creates a conflict
-			for _, v := range layer {
-				for _, u := range s.predecessors[v] {
-					uNode := s.nodes[u]
-					if uNode == nil {
-						continue
-					}
-					// Check if edge (u,v) crosses the inner segment
-					if s.edgeCrossesSegment(u, v, seg, prevLayer, layer) {
+				// Skip if this edge IS an inner segment (both endpoints are dummies)
+				if uNode.isDummy && vNode.isDummy {
+					continue
+				}
+
+				// Check against all inner segments at this layer pair
+				for _, seg := range segments {
+					if (uPos < seg.upperPos && vPos > seg.lowerPos) ||
+						(uPos > seg.upperPos && vPos < seg.lowerPos) {
 						conflicts[conflictKey{v, u}] = true
 						conflicts[conflictKey{u, v}] = true
+						break
 					}
 				}
 			}
@@ -247,81 +290,6 @@ func (s *layoutState) findType1Conflicts() map[conflictKey]bool {
 	}
 
 	return conflicts
-}
-
-// innerSegment represents an edge between two dummy nodes.
-type innerSegment struct {
-	upperPos int // position in upper layer
-	lowerPos int // position in lower layer
-}
-
-// findInnerSegments finds edges between dummy nodes (inner segments).
-func (s *layoutState) findInnerSegments(upperLayer, lowerLayer []string) []innerSegment {
-	var segments []innerSegment
-
-	// Build position maps
-	upperPos := make(map[string]int)
-	for i, id := range upperLayer {
-		upperPos[id] = i
-	}
-	lowerPos := make(map[string]int)
-	for i, id := range lowerLayer {
-		lowerPos[id] = i
-	}
-
-	// Find inner segments
-	for _, upperID := range upperLayer {
-		upperNode := s.nodes[upperID]
-		if upperNode == nil || !upperNode.isDummy {
-			continue
-		}
-
-		for _, lowerID := range s.successors[upperID] {
-			lowerNode := s.nodes[lowerID]
-			if lowerNode == nil || !lowerNode.isDummy {
-				continue
-			}
-
-			// Check if lower node is in this layer
-			if pos, ok := lowerPos[lowerID]; ok {
-				segments = append(segments, innerSegment{
-					upperPos: upperPos[upperID],
-					lowerPos: pos,
-				})
-			}
-		}
-	}
-
-	return segments
-}
-
-// edgeCrossesSegment checks if an edge would cross an inner segment.
-func (s *layoutState) edgeCrossesSegment(u, v string, seg innerSegment, upperLayer, lowerLayer []string) bool {
-	// Get positions
-	uPos := -1
-	for i, id := range upperLayer {
-		if id == u {
-			uPos = i
-			break
-		}
-	}
-	vPos := -1
-	for i, id := range lowerLayer {
-		if id == v {
-			vPos = i
-			break
-		}
-	}
-
-	if uPos == -1 || vPos == -1 {
-		return false
-	}
-
-	// Check for crossing: edges cross if their positions are interleaved
-	// Edge (uPos, vPos) crosses segment (seg.upperPos, seg.lowerPos) if:
-	// (uPos < seg.upperPos && vPos > seg.lowerPos) || (uPos > seg.upperPos && vPos < seg.lowerPos)
-	return (uPos < seg.upperPos && vPos > seg.lowerPos) ||
-		(uPos > seg.upperPos && vPos < seg.lowerPos)
 }
 
 // verticalAlignment creates blocks of vertically aligned nodes.

@@ -23,7 +23,7 @@ func TestOrder_NoCrossings(t *testing.T) {
 
 	crossings := state.countCrossings()
 	if crossings != 0 {
-		t.Errorf("Expected 0 crossings for tree, got %d", crossings)
+		t.Errorf("Expected 0 crossings for tree, got %v", crossings)
 	}
 }
 
@@ -52,7 +52,7 @@ func TestOrder_CrossingsDecrease(t *testing.T) {
 	finalCrossings := state.countCrossings()
 
 	if finalCrossings > initialCrossings {
-		t.Errorf("Crossings increased: %d -> %d", initialCrossings, finalCrossings)
+		t.Errorf("Crossings increased: %v -> %v", initialCrossings, finalCrossings)
 	}
 }
 
@@ -126,7 +126,7 @@ func TestOrder_TwoLayerCrossCount(t *testing.T) {
 		north    []string
 		south    []string
 		edges    [][2]string
-		expected int
+		expected float64
 	}{
 		{
 			name:     "no crossings parallel",
@@ -186,7 +186,7 @@ func TestOrder_TwoLayerCrossCount(t *testing.T) {
 
 			crossings := state.twoLayerCrossCount(tt.north, tt.south)
 			if crossings != tt.expected {
-				t.Errorf("Expected %d crossings, got %d", tt.expected, crossings)
+				t.Errorf("Expected %v crossings, got %v", tt.expected, crossings)
 			}
 		})
 	}
@@ -222,7 +222,7 @@ func TestOrder_SingleNode(t *testing.T) {
 
 	crossings := state.countCrossings()
 	if crossings != 0 {
-		t.Errorf("Expected 0 crossings for single node, got %d", crossings)
+		t.Errorf("Expected 0 crossings for single node, got %v", crossings)
 	}
 }
 
@@ -244,7 +244,7 @@ func TestOrder_DisconnectedComponents(t *testing.T) {
 	// Should handle disconnected components without errors
 	crossings := state.countCrossings()
 	if crossings != 0 {
-		t.Errorf("Expected 0 crossings for disconnected simple edges, got %d", crossings)
+		t.Errorf("Expected 0 crossings for disconnected simple edges, got %v", crossings)
 	}
 }
 
@@ -270,7 +270,7 @@ func TestOrder_LongChain(t *testing.T) {
 	// Linear chain should have 0 crossings
 	crossings := state.countCrossings()
 	if crossings != 0 {
-		t.Errorf("Expected 0 crossings for linear chain, got %d", crossings)
+		t.Errorf("Expected 0 crossings for linear chain, got %v", crossings)
 	}
 }
 
@@ -299,7 +299,7 @@ func TestOrder_DiamondGraph(t *testing.T) {
 	// Diamond should have 0 crossings when ordered properly
 	crossings := state.countCrossings()
 	if crossings != 0 {
-		t.Errorf("Expected 0 crossings for diamond, got %d", crossings)
+		t.Errorf("Expected 0 crossings for diamond, got %v", crossings)
 	}
 }
 
@@ -352,7 +352,7 @@ func TestOrder_SweepDown(t *testing.T) {
 	finalCrossings := state.countCrossings()
 
 	if finalCrossings > initialCrossings {
-		t.Errorf("sweepDown made crossings worse: %d -> %d", initialCrossings, finalCrossings)
+		t.Errorf("sweepDown made crossings worse: %v -> %v", initialCrossings, finalCrossings)
 	}
 }
 
@@ -380,6 +380,6 @@ func TestOrder_SweepUp(t *testing.T) {
 	finalCrossings := state.countCrossings()
 
 	if finalCrossings > initialCrossings {
-		t.Errorf("sweepUp made crossings worse: %d -> %d", initialCrossings, finalCrossings)
+		t.Errorf("sweepUp made crossings worse: %v -> %v", initialCrossings, finalCrossings)
 	}
 }

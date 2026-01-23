@@ -683,7 +683,14 @@ func (g *Graph) IncrementalLayout(base *Layout, changes IncrementalOptions, opts
 	state.makeAcyclic()
 	state.assignLayers()
 	state.addDummyNodes()
-	state.minimizeCrossings()
+
+	// When we have a base layout and only dimensions changed, restore ordering
+	// from base positions instead of re-running crossing minimization.
+	if base != nil {
+		state.restoreOrderFromBase(base)
+	} else {
+		state.minimizeCrossings()
+	}
 
 	// Assign coordinates: Y from scratch (layer heights may have changed),
 	// but preserve X positions for fixed/unchanged nodes

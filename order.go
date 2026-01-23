@@ -121,6 +121,54 @@ func (s *layoutState) assignOrderFromLayers() {
 	}
 }
 
+// restoreOrderFromBase sets node ordering within each layer based on X positions
+// from a previous layout. This avoids re-running crossing minimization when only
+// node dimensions have changed (topology is the same).
+func (s *layoutState) restoreOrderFromBase(base *Layout) {
+	// Build X position lookup from base layout
+	baseX := make(map[string]float64, len(base.Nodes))
+	for id, node := range base.Nodes {
+		baseX[id] = node.X
+	}
+
+	// For dummy nodes, estimate X by averaging the X positions of their
+	// edge endpoints (source and target of the original edge they represent)
+	for id, node := range s.nodes {
+		if !node.isDummy {
+			continue
+		}
+		// Find connected real nodes to estimate position
+		sum := 0.0
+		count := 0
+		for _, pred := range s.predecessors[id] {
+			if x, ok := baseX[pred]; ok {
+				sum += x
+				count++
+			}
+		}
+		for _, succ := range s.successors[id] {
+			if x, ok := baseX[succ]; ok {
+				sum += x
+				count++
+			}
+		}
+		if count > 0 {
+			baseX[id] = sum / float64(count)
+		}
+	}
+
+	// Sort each layer by base X position
+	for _, layer := range s.layers {
+		sort.SliceStable(layer, func(i, j int) bool {
+			xi := baseX[layer[i]]
+			xj := baseX[layer[j]]
+			return xi < xj
+		})
+	}
+
+	s.assignOrderFromLayers()
+}
+
 // copyLayers creates a deep copy of the current layer structure.
 func (s *layoutState) copyLayers() [][]string {
 	result := make([][]string, len(s.layers))
@@ -191,8 +239,8 @@ func (s *layoutState) adjacentExchange() {
 }
 
 // crossingsInvolving counts crossings in layers adjacent to the given rank.
-func (s *layoutState) crossingsInvolving(rank int) int {
-	total := 0
+func (s *layoutState) crossingsInvolving(rank int) float64 {
+	total := 0.0
 	if rank > 0 {
 		total += s.twoLayerCrossCount(s.layers[rank-1], s.layers[rank])
 	}
@@ -342,8 +390,8 @@ func (s *layoutState) calculateBarycenter(nodeID string, neighborFn func(string)
 }
 
 // countCrossings counts total edge crossings in the current layout.
-func (s *layoutState) countCrossings() int {
-	total := 0
+func (s *layoutState) countCrossings() float64 {
+	total := 0.0
 	for i := 1; i < len(s.layers); i++ {
 		total += s.twoLayerCrossCount(s.layers[i-1], s.layers[i])
 	}
@@ -352,10 +400,11 @@ func (s *layoutState) countCrossings() int {
 
 // twoLayerCrossCount counts crossings between two adjacent layers.
 // Uses an accumulator tree (similar to Fenwick tree) for O(E log V) performance.
+// Returns float64 to preserve precision when edge weights are fractional.
 // Reference: Barth, Mutzel, Junger. "Simple and Efficient Bilayer Cross Counting."
-func (s *layoutState) twoLayerCrossCount(northLayer, southLayer []string) int {
+func (s *layoutState) twoLayerCrossCount(northLayer, southLayer []string) float64 {
 	if len(northLayer) == 0 || len(southLayer) == 0 {
-		return 0
+		return 0.0
 	}
 
 	// Build position map for south layer
@@ -395,7 +444,7 @@ func (s *layoutState) twoLayerCrossCount(northLayer, southLayer []string) int {
 	}
 
 	if len(southEntries) == 0 {
-		return 0
+		return 0.0
 	}
 
 	// Build accumulator tree
@@ -425,7 +474,7 @@ func (s *layoutState) twoLayerCrossCount(northLayer, southLayer []string) int {
 		cc += e.weight * weightSum
 	}
 
-	return int(cc)
+	return cc
 }
 
 // enforceClusterAdjacency ensures children of each cluster are placed

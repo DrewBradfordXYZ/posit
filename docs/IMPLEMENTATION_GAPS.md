@@ -25,8 +25,11 @@ Issues identified by code review comparing posit against msagljs and dagre refer
 | 13 | No label collision avoidance | Low | Open |
 | 14 | No port boundary curves | Low | **FIXED** |
 | 15 | Compound graphs: bbox only | Low | Open |
+| 16 | Type-1 conflict: O(V) position scan | Low | **FIXED** |
+| 17 | Incremental layout re-runs ordering | Low | **FIXED** |
+| 18 | Cross count truncates to int | Low | **FIXED** |
 
-**Resolved: 12/15** — Remaining items are low-severity or accepted trade-offs.
+**Resolved: 15/18** — Remaining items are low-severity or accepted trade-offs.
 
 ---
 
@@ -158,44 +161,25 @@ Still runs more phases than strictly necessary (full ranking + ordering), but th
 
 ---
 
-## New Issues from Code Review
+## Recently Fixed
 
-### 16. Type-1 Conflict Detection: Adjacent Layers Only
+### 16. Type-1 Conflict Detection (FIXED)
 
-**Severity:** Low
-**File:** `position.go:220-250` — `findType1Conflicts()`
+`position.go` — `findType1Conflicts()` rewritten to:
+- Precompute all inner segments once by iterating dummy nodes (O(D) instead of O(V) per layer)
+- Use `node.order` for O(1) position lookup instead of O(V) linear scan per edge
+- Skip checking inner segments against themselves (both endpoints are dummies)
+- Group segments by layer rank for O(1) lookup per layer pair
 
-**Problem:** Inner segment (dummy-to-dummy edge) detection only checks between adjacent layers. A dummy chain spanning 3+ layers creates multiple inner segments, all of which are found individually, but the conflict check for a non-inner edge crossing a multi-layer dummy path relies on each pair being detected separately. This is correct but could miss edge cases where an alignment would cross a segment pair that isn't individually detected.
+Adjacent-layer detection is correct per the Brandes-Kopf paper: after normalization all edges span exactly one layer, so an edge can only cross inner segments at its own layer pair.
 
-**Impact:** Suboptimal alignment quality in rare cases. Not a correctness bug — layouts are still valid, just potentially wider than necessary.
+### 17. Incremental Layout Ordering (FIXED)
 
-**What dagre does:** Same approach (adjacent-layer only). This is standard for Brandes-Kopf.
+`posit.go` — `IncrementalLayout()` now skips `minimizeCrossings()` when a base layout is provided. Instead calls `restoreOrderFromBase()` which sorts nodes within each layer by their base X position (preserving the previous ordering). Dummy nodes are positioned by averaging their connected real nodes' base X positions.
 
----
+### 18. Cross Count Precision (FIXED)
 
-### 17. Incremental Layout Re-Runs Full Ordering
-
-**Severity:** Low
-**File:** `posit.go:683-686`
-
-**Problem:** `IncrementalLayout()` re-runs `minimizeCrossings()` from scratch. For graphs where only node dimensions changed (not topology), the ordering phase could be skipped entirely since layer assignment is the same.
-
-**Impact:** Performance only. For the target graph sizes (<1000 nodes), this adds negligible time.
-
-**Potential fix:** Skip ordering when `changes.Changes` only contains dimension updates and no structural changes to edges/nodes.
-
----
-
-### 18. Cross Count Return Truncates to Int
-
-**Severity:** Low
-**File:** `order.go:428` — `return int(cc)`
-
-**Problem:** The accumulator tree computes crossings in `float64` (because edge weights are float64) but returns `int`. For fractional weights, this loses precision in the comparison. Two orderings with crossing counts 5.3 and 5.7 would both return 5.
-
-**Impact:** Minimal in practice — edge weights are typically integers (default 1.0), and the comparison `after < before` in adjacentExchange would need sub-1.0 differences to matter.
-
-**Potential fix:** Return `float64` from `twoLayerCrossCount()` and compare floats in `crossingsInvolving()` and `countCrossings()`.
+`order.go` — `twoLayerCrossCount()`, `crossingsInvolving()`, and `countCrossings()` all return `float64`. Preserves precision for fractional edge weights throughout the crossing minimization pipeline.
 
 ---
 

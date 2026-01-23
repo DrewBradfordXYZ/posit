@@ -468,9 +468,29 @@ func (s *layoutState) sortedNeighborPositions(nodeID string, usePredecessors boo
 		positions = append(positions, neighborPos{pos: n.order, weight: w})
 	}
 
-	sort.Slice(positions, func(i, j int) bool {
-		return positions[i].pos < positions[j].pos
-	})
+	// Manual swaps for common small sizes (most nodes have 2-5 neighbors)
+	switch len(positions) {
+	case 0, 1:
+		// Already sorted
+	case 2:
+		if positions[0].pos > positions[1].pos {
+			positions[0], positions[1] = positions[1], positions[0]
+		}
+	case 3:
+		if positions[0].pos > positions[1].pos {
+			positions[0], positions[1] = positions[1], positions[0]
+		}
+		if positions[1].pos > positions[2].pos {
+			positions[1], positions[2] = positions[2], positions[1]
+			if positions[0].pos > positions[1].pos {
+				positions[0], positions[1] = positions[1], positions[0]
+			}
+		}
+	default:
+		sort.Slice(positions, func(i, j int) bool {
+			return positions[i].pos < positions[j].pos
+		})
+	}
 
 	return positions
 }
@@ -642,10 +662,27 @@ func (s *layoutState) calculateBarycenter(nodeID string, neighborFn func(string)
 		return positions[0].position, true
 	}
 
-	// Sort by position
-	sort.Slice(positions, func(i, j int) bool {
-		return positions[i].position < positions[j].position
-	})
+	// Sort by position — use manual swaps for small slices (common case: 2-5 neighbors)
+	switch len(positions) {
+	case 2:
+		if positions[0].position > positions[1].position {
+			positions[0], positions[1] = positions[1], positions[0]
+		}
+	case 3:
+		if positions[0].position > positions[1].position {
+			positions[0], positions[1] = positions[1], positions[0]
+		}
+		if positions[1].position > positions[2].position {
+			positions[1], positions[2] = positions[2], positions[1]
+			if positions[0].position > positions[1].position {
+				positions[0], positions[1] = positions[1], positions[0]
+			}
+		}
+	default:
+		sort.Slice(positions, func(i, j int) bool {
+			return positions[i].position < positions[j].position
+		})
+	}
 
 	// Find weighted median: the position where cumulative weight crosses half
 	halfWeight := totalWeight / 2
@@ -682,11 +719,9 @@ func (s *layoutState) twoLayerCrossCount(northLayer, southLayer []string) float6
 		return 0.0
 	}
 
-	// Build position map for south layer
-	southPos := make(map[string]int, len(southLayer))
-	for i, id := range southLayer {
-		southPos[id] = i
-	}
+	// Use node.order directly instead of building a position map.
+	// The order field is kept current by all swap/sort operations.
+	southRank := s.nodes[southLayer[0]].rank
 
 	// Collect south positions for all edges from north, ordered by north position
 	type entry struct {
@@ -694,12 +729,13 @@ func (s *layoutState) twoLayerCrossCount(northLayer, southLayer []string) float6
 		weight float64
 	}
 	southEntries := make([]entry, 0, len(northLayer)*2)
+	edges := make([]entry, 0, 8) // reusable buffer for per-node edges
 
 	for _, v := range northLayer {
-		var edges []entry
+		edges = edges[:0]
 		for _, w := range s.successors[v] {
-			pos, ok := southPos[w]
-			if !ok {
+			wNode := s.nodes[w]
+			if wNode == nil || wNode.rank != southRank {
 				continue // Edge to different layer
 			}
 			weight := 1.0
@@ -709,12 +745,31 @@ func (s *layoutState) twoLayerCrossCount(northLayer, southLayer []string) float6
 					weight = 1
 				}
 			}
-			edges = append(edges, entry{pos: pos, weight: weight})
+			edges = append(edges, entry{pos: wNode.order, weight: weight})
 		}
-		// Sort by position within this node's edges
-		sort.Slice(edges, func(i, j int) bool {
-			return edges[i].pos < edges[j].pos
-		})
+		// Sort by position within this node's edges (manual for small sizes)
+		switch len(edges) {
+		case 0, 1:
+			// Already sorted
+		case 2:
+			if edges[0].pos > edges[1].pos {
+				edges[0], edges[1] = edges[1], edges[0]
+			}
+		case 3:
+			if edges[0].pos > edges[1].pos {
+				edges[0], edges[1] = edges[1], edges[0]
+			}
+			if edges[1].pos > edges[2].pos {
+				edges[1], edges[2] = edges[2], edges[1]
+				if edges[0].pos > edges[1].pos {
+					edges[0], edges[1] = edges[1], edges[0]
+				}
+			}
+		default:
+			sort.Slice(edges, func(i, j int) bool {
+				return edges[i].pos < edges[j].pos
+			})
+		}
 		southEntries = append(southEntries, edges...)
 	}
 

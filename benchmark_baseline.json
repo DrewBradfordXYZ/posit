@@ -2,25 +2,25 @@
   "profiles": [
     {
       "name": "Large (500n/1000e)",
-      "time_ms": 2165,
-      "crossings": 39245,
-      "area": 343686500,
-      "width": 15350,
+      "time_ms": 1040,
+      "crossings": 41072,
+      "area": 339768250,
+      "width": 15175,
       "height": 22390,
       "layers": 173
     },
     {
       "name": "Dense (100n/~2000e)",
-      "time_ms": 3085,
-      "crossings": 243508,
-      "area": 258957000,
-      "width": 20700,
+      "time_ms": 1382,
+      "crossings": 247991,
+      "area": 244570500,
+      "width": 19550,
       "height": 12510,
       "layers": 97
     },
     {
       "name": "Wide (100x5)",
-      "time_ms": 49,
+      "time_ms": 28,
       "crossings": 39346,
       "area": 5885000,
       "width": 10700,
@@ -38,8 +38,8 @@
     },
     {
       "name": "Medium (100n/200e)",
-      "time_ms": 41,
-      "crossings": 1046,
+      "time_ms": 40,
+      "crossings": 1064,
       "area": 11772000,
       "width": 2725,
       "height": 4320,

@@ -15,6 +15,9 @@ The codebase uses Go concurrency for independent parallel phases (BK alignment, 
 | Adaptive BK threshold | `position.go` | Skips O(V²) BK for large graphs |
 | Parallel BK alignments | `position.go:assignXCoordinatesBK()` | 4 goroutines for independent passes |
 | Parallel edge path building | `route.go:buildChainPathsParallel()` | Per-chain goroutines (≥50 chains) |
+| Direct order field access | `order.go:twoLayerCrossCount()` | Eliminates per-call southPos map |
+| Edges buffer reuse | `order.go:twoLayerCrossCount()` | Eliminates per-node slice allocation |
+| Small-sort specialization | `order.go` (3 call sites) | Avoids sort.Slice overhead for ≤3 elements |
 | First-improvement search | `order.go:greedyExchangeWithCache()` | Reduces scan iterations |
 | Deterministic RNG | `state.go` | Reproducible without syscalls |
 | Slice pre-allocation | `order.go`, `route.go` | Eliminates grow-from-zero appends |
@@ -46,6 +49,30 @@ Dummy chain path building is split into `buildChainPath` (per-chain, reads from 
 The accumulator tree slice in `twoLayerCrossCount()` is stored as `treeBuf []float64` on `layoutState`. This avoids allocation on every call (hundreds of times per layout) without the overhead of `sync.Pool` (which adds per-P pinning, type assertions, and atomic operations that exceeded the allocation savings for these sizes).
 
 **Note:** `sync.Pool` was tested and rejected — its internal locking overhead made the hot-path ~5% slower than simple `make()`. Field-level reuse has zero overhead since `layoutState` is single-owner during the ordering phase.
+
+### Direct Order Field Access ✓
+
+**Files:** `order.go`
+
+`twoLayerCrossCount()` previously rebuilt a `southPos map[string]int` on every call (3,500–7,000 times per layout), mapping each south-layer node to its index. Since `node.order` is kept current by all swap/sort operations, the map is replaced with a direct rank check and `wNode.order` access. This eliminates ~1.4M map insertions and lookups per layout.
+
+### Edges Buffer Reuse ✓
+
+**Files:** `order.go`
+
+In `twoLayerCrossCount()`, the per-north-node `edges` slice was re-allocated via `var edges []entry` on each iteration. A single `edges` buffer is now allocated once before the loop and reset with `edges[:0]` each iteration.
+
+### Small-Sort Specialization ✓
+
+**Files:** `order.go`
+
+Three sort call sites use manual comparison swaps for slices of 2–3 elements instead of `sort.Slice()`. This avoids the function-call overhead, interface boxing, and reflection that `sort.Slice` introduces for the common case (most nodes have 2–5 neighbors).
+
+| Call site | Context |
+|-----------|---------|
+| `twoLayerCrossCount` | Per-node edges sorted by south position |
+| `sortedNeighborPositions` | Neighbor positions for swap delta cache |
+| `calculateBarycenter` | Weighted positions for median computation |
 
 ### Slice Pre-allocation ✓
 

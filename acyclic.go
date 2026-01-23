@@ -39,10 +39,18 @@ func (s *layoutState) makeAcyclicDFS() {
 
 		for _, w := range successors {
 			if onStack[w] {
-				// Back edge found - reverse it
-				key := edgeKey{from: v, to: w}
-				s.reverseEdge(key)
-				reversed = append(reversed, key)
+				// Back edge found - reverse all edges from v to w
+				// (multi-edges have distinct IDs, so we must find them all)
+				var keysToReverse []edgeKey
+				for ekey := range s.edges {
+					if ekey.from == v && ekey.to == w {
+						keysToReverse = append(keysToReverse, ekey)
+					}
+				}
+				for _, key := range keysToReverse {
+					s.reverseEdge(key)
+					reversed = append(reversed, key)
+				}
 			} else if !visited[w] {
 				dfs(w)
 			}
@@ -91,8 +99,8 @@ func (s *layoutState) reverseEdge(key edgeKey) {
 	s.successors[key.from] = removeString(s.successors[key.from], key.to)
 	s.predecessors[key.to] = removeString(s.predecessors[key.to], key.from)
 
-	// Create reversed edge
-	newKey := edgeKey{from: key.to, to: key.from}
+	// Create reversed edge (preserve ID for multi-edge support)
+	newKey := edgeKey{from: key.to, to: key.from, id: key.id}
 	delete(s.edges, key)
 
 	edge.key = newKey

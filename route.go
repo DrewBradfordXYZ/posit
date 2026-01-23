@@ -85,7 +85,7 @@ func (s *layoutState) buildEdgePaths() {
 	// Apply results to edge map (sequential — shared map mutations)
 	for i := range results {
 		r := &results[i]
-		originalKey := edgeKey{from: r.sourceID, to: r.targetID}
+		originalKey := edgeKey{from: r.sourceID, to: r.targetID, id: r.edge.id}
 		r.edge.key = originalKey
 		r.edge.points = r.points
 		if r.hasLabel {
@@ -217,7 +217,7 @@ func (s *layoutState) restoreReversedEdges() {
 	for _, key := range s.reversedEdges {
 		// The key stored is the ORIGINAL direction (before reversal).
 		// After reversal, the edge is stored under the reversed key.
-		reversedKey := edgeKey{from: key.to, to: key.from}
+		reversedKey := edgeKey{from: key.to, to: key.from, id: key.id}
 		edge := s.edges[reversedKey]
 		if edge == nil {
 			continue

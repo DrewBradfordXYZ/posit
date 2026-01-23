@@ -1166,6 +1166,34 @@ func TestMultiEdge_BackwardCompatible(t *testing.T) {
 	}
 }
 
+func TestMultiEdge_LongEdgePreservesID(t *testing.T) {
+	// Multi-edges spanning multiple ranks go through normalization (dummy chains).
+	// Verify the edge ID is preserved through normalization + path reassembly.
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 50}) // intermediate rank
+	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
+	g.MustAddEdge("A", "B", EdgeOptions{ID: "short"})
+	// These edges skip B, spanning 2 ranks → triggers normalization
+	g.MustAddEdge("A", "C", EdgeOptions{ID: "long-1"})
+	g.MustAddEdge("A", "C", EdgeOptions{ID: "long-2"})
+
+	layout := g.Layout(Options{Direction: TopToBottom, NodeSep: 50, RankSep: 100})
+
+	// Short edge
+	if _, ok := layout.Edges["A->B:short"]; !ok {
+		t.Error("Short edge A->B:short not found in layout")
+	}
+
+	// Long multi-edges should preserve their IDs through normalization
+	if _, ok := layout.Edges["A->C:long-1"]; !ok {
+		t.Error("Long edge A->C:long-1 not found (ID lost during normalization)")
+	}
+	if _, ok := layout.Edges["A->C:long-2"]; !ok {
+		t.Error("Long edge A->C:long-2 not found (ID lost during normalization)")
+	}
+}
+
 // ==================== Ordering Constraints Tests ====================
 
 func TestOrderConstraint_Group(t *testing.T) {

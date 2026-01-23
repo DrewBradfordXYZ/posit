@@ -1,261 +1,237 @@
 # Implementation Gaps
 
-Issues identified by code review comparing posit against msagljs (MIT, Microsoft).
+Issues identified by code review comparing posit against msagljs and dagre reference implementations.
+
+**Last reviewed:** 2025-01-22
 
 ---
 
-## Critical
+## Status Summary
 
-### 1. Orthogonal Routing: No Node Avoidance or Edge Spacing
+| # | Issue | Severity | Status |
+|---|-------|----------|--------|
+| 1 | Orthogonal routing: no node avoidance/spacing | Critical | **FIXED** |
+| 2 | Rank constraints: post-hoc breaks invariants | Medium | Open (accepted trade-off) |
+| 3 | Component discovery includes dummies | Critical | **FIXED** |
+| 4 | No adjacent exchange in crossing min | High | **FIXED** |
+| 5 | Port coords not direction-transformed | High | **FIXED** |
+| 6 | Multi-edge offset only at endpoints | High | **FIXED** |
+| 7 | Clusters don't affect routing | High | **FIXED** |
+| 8 | Brandes-Kopf: one alignment only | Medium | **FIXED** |
+| 9 | Barycenter vs weighted median | Medium | **FIXED** |
+| 10 | Port crossing min: O(E^2) scan | Medium | **FIXED** |
+| 11 | Incremental layout: full re-layout | Medium | **FIXED** (partial) |
+| 12 | Weight truncation in cross count | Low | **FIXED** |
+| 13 | No label collision avoidance | Low | Open |
+| 14 | No port boundary curves | Low | **FIXED** |
+| 15 | Compound graphs: bbox only | Low | Open |
 
-**File:** `route.go` — `routeOrthogonal()`
-
-**Problem:** The current implementation assigns edges to vertical channels between node columns, but doesn't check whether nodes obstruct those channels. Edges can pass directly through intermediate nodes. Additionally, multiple edges sharing a channel are not spaced apart — they overlap.
-
-**What the doc specifies:**
-- "Route around nodes that fall within the channel"
-- "Assign edges to channels with offset spacing to prevent overlaps"
-
-**What msagljs does:** Full visibility graph construction with obstacle boundaries, shortest-path routing, and a "nudging" pass that spreads overlapping edge segments apart.
-
-**Fix:** After channel assignment, check if any node bounding box intersects the channel corridor. If so, insert additional bends to route around the obstruction. For edge spacing, track which edges occupy each channel segment and offset them by `ChannelGap`.
-
-**Scope:** `route.go` — rewrite `routeOrthogonal()` internals.
-
----
-
-### 2. Rank Constraints: Post-Hoc Adjustment Breaks Edge Spans
-
-**File:** `rank.go` — `applyRankConstraints()`
-
-**Problem:** Rank constraints are applied after Network Simplex finishes. Moving a node to rank 0 (RankMin) or max rank (RankMax) can create edges that span many layers, but the normalization phase (which inserts dummy nodes for multi-layer edges) has already run by the time constraints are applied.
-
-**Current order:**
-1. Network Simplex assigns ranks
-2. `applyRankConstraints()` moves nodes
-3. `normalize()` inserts dummy nodes
-
-This works only because `normalize()` runs after constraints. But the rank adjustment can violate the tight-tree invariant that Network Simplex established, producing suboptimal rank assignments for unconstrained nodes.
-
-**What msagljs does:** Integrates constraints directly into the Network Simplex solver as additional edges with min/max length constraints.
-
-**Fix:** Encode RankMin as a virtual edge from a synthetic source to the node with `minlen=0, weight=high`. Encode RankMax similarly. Encode RankGroup as zero-length edges between group members. Feed these into Network Simplex so the solver respects constraints natively.
-
-**Scope:** `rank.go` — modify `networkSimplex()` or add constraint edges before calling it.
+**Resolved: 12/15** — Remaining items are low-severity or accepted trade-offs.
 
 ---
 
-### 3. Component Discovery Includes Dummy Nodes
+## Resolved Items
 
-**File:** `components.go` — `findComponents()`
+### 1. Orthogonal Routing (FIXED)
 
-**Problem:** BFS traversal includes dummy nodes (inserted during normalization). If a long edge is split into dummy nodes that bridge two otherwise-disconnected subgraphs, `findComponents()` will treat them as one component. Conversely, if `findComponents()` is called before normalization, dummy nodes don't exist yet and edges spanning multiple ranks aren't traversable.
+`route.go` — `routeOrthogonal()` now implements:
+- Obstacle collection from real node bounding boxes
+- Cluster bounding boxes as routing obstacles (`computeClusterObstacles()`)
+- Horizontal channel computation between layers (`computeLayerChannelYs()`)
+- Channel usage tracking with spacing offsets (`orthoSegKey` + `channelUsage` map)
+- Vertical channel clearance search (`findClearVerticalChannel()`)
+- Full obstacle-aware path construction (`buildOrthogonalPath()`)
 
-**Current call site:** `findComponents()` uses `s.nodes` and `s.successors`/`s.predecessors`, which include dummy nodes after normalization.
+### 3. Component Discovery (FIXED)
 
-**Fix:** Either:
-- (a) Run component detection before normalization, using only real nodes and original edges, OR
-- (b) Filter dummy nodes from BFS and treat the original edge endpoints as connected regardless of intermediate dummies.
+`components.go` — `findComponents()` traverses through dummy nodes but only collects real nodes in returned components. BFS uses successors/predecessors (including dummies) for connectivity but filters with `!node.isDummy` before adding to component.
 
-**Scope:** `components.go` — modify `findComponents()` to skip dummy nodes or run it earlier in the pipeline.
+### 4. Adjacent Exchange (FIXED)
 
----
+`order.go:155` — `adjacentExchange()` implemented with:
+- Layer-by-layer swap attempts for adjacent pairs
+- O(n^2) per layer, skipped for layers >50 nodes
+- 2-pass limit per layer with early termination on no improvement
+- Uses `crossingsInvolving()` for efficient local crossing count
 
-## High
+### 5. Port Direction Transform (FIXED)
 
-### 4. Crossing Minimization: No Adjacent Exchange
+`route.go:252` — `getPortPosition()` calls `portSideToInternal()` which transforms port sides through the direction rotation. Handles all four directions (TB, LR, RL, BT) with proper side rotation functions.
 
-**File:** `order.go` — `minimizeCrossings()`
+### 6. Multi-Edge Offset (FIXED)
 
-**Problem:** The barycenter heuristic can get stuck in local minima. The standard fix (used by dagre and msagljs) is an "adjacent exchange" pass after each sweep: for each pair of adjacent nodes in a layer, swap them if doing so reduces crossings.
+`route.go:402` — `offsetParallelEdges()` now offsets the entire polyline:
+- Computes perpendicular direction at each point (averaging adjacent segments for middle points)
+- Applies perpendicular offset uniformly along the path
+- Parallel edges remain visually separated even around bends
 
-**What msagljs does:** After each barycenter sweep, iterates adjacent pairs and swaps when it improves the crossing count. This is O(n²) per layer per sweep but catches cases where barycenter ordering is suboptimal.
+### 7. Cluster Routing Obstacles (FIXED)
 
-**Fix:** Add `adjacentExchange()` called after each `sweepDown()`/`sweepUp()` in the main loop. For each layer, try swapping each adjacent pair and keep the swap if `twoLayerCrossCount` improves.
+`route.go:531` — `routeOrthogonal()` calls `computeClusterObstacles()` and appends cluster bounding boxes to the obstacle list before routing. Edges route around cluster boundaries.
 
-**Scope:** `order.go` — add `adjacentExchange()` method, call from `minimizeCrossings()`.
+### 8. Brandes-Kopf Four Alignments (FIXED)
 
----
+`position.go:124-170` — Computes all four alignments (ul, ur, dl, dr) using reversed layers/orders. Takes median of four values (average of middle two) for final X position. Adaptive threshold (default 100 nodes) switches to simple centering for large graphs.
 
-### 5. Port Coordinates Not Direction-Transformed
+### 9. Weighted Median (FIXED)
 
-**File:** `route.go` — `getPortPosition()`
+`order.go:277-342` — `calculateBarycenter()` (misnamed, actually implements weighted median). Sorts positions, finds the point where cumulative weight crosses half the total. Robust to outliers unlike arithmetic mean.
 
-**Problem:** Port offsets are computed assuming TopToBottom direction (Side=Right means x+width, Side=Left means x=0, etc.). For LeftToRight, BottomToTop, or RightToLeft layouts, the port coordinates are incorrect because node width/height have been swapped but port Side/Offset values haven't been remapped.
+### 10. Port Crossing Minimization (FIXED)
 
-**Example:** A port with `Side=Right, Offset=20` on a node in LR layout should produce a point on the bottom of the (rotated) node, not the right side.
+`order.go:541-654` — `adjustForPortPositions()` uses direct map lookups via `s.edges[edgeKey{...}]` (O(1) per edge) instead of iterating all edges. Checks both directions for each neighbor.
 
-**Fix:** In `getPortPosition()`, transform the port's Side through the same rotation used in `adjustForDirection()` / `undoDirectionAdjustment()`. Or: compute port positions in internal TB space (after the direction swap of width/height), then let `undoDirectionAdjustment()` transform coordinates naturally.
+### 11. Incremental Layout (FIXED — partial)
 
-**Scope:** `route.go` — modify `getPortPosition()` to account for direction.
+`posit.go:663` — `IncrementalLayout()` now:
+- Re-runs full ranking and crossing minimization (can't avoid this for structural correctness)
+- Recomputes Y coordinates from scratch (layer heights may change)
+- Pins fixed node X positions from base layout after X assignment
+- Re-routes all edges
 
----
+Still runs more phases than strictly necessary (full ranking + ordering), but the X-pinning behavior is correct. A fully incremental approach would require position-constrained stress minimization (like msagljs's iPsepCola), which is a different algorithm family.
 
-### 6. Multi-Edge Offset Only Applies to Endpoints
+### 12. Weight Truncation (FIXED)
 
-**File:** `route.go` — `offsetParallelEdges()`
+`order.go:356-429` — `twoLayerCrossCount()` uses `float64` throughout the accumulator tree. Edge weights <1 are clamped to 1.0 (line 384-386). The final `int(cc)` truncation only affects the return value comparison, not the accumulation precision.
 
-**Problem:** The function offsets only the first and last points of parallel edges. For edges with intermediate bend points (from dummy node routing), the offset is only visible at the start/end — the middle segments converge back to the same path.
+### 14. Port Boundary Curves (FIXED)
 
-**Fix:** Offset all points in the edge path perpendicular to the path direction at each segment. For straight edges this is trivial; for edges with bends, compute the perpendicular at each segment and offset accordingly.
-
-**Scope:** `route.go` — rewrite `offsetParallelEdges()` to offset entire polylines.
-
----
-
-### 7. Cluster Boundaries Not Respected by Edge Routing
-
-**File:** `route.go`, `posit.go`
-
-**Problem:** Cluster bounding boxes are computed in `adjustClusters()` after layout, but edge routing runs before cluster adjustment. Even if reordered, the edge router doesn't know about cluster boundaries and will route edges through cluster interiors.
-
-**What msagljs does:** Clusters are modeled as obstacles in the routing graph. Edges entering/exiting a cluster must cross the cluster boundary at defined points.
-
-**Fix:** After cluster bounds are computed, add cluster rectangles as obstacles to the edge routing phase. Edges not originating from within a cluster must route around its boundary.
-
-**Scope:** `route.go` + `posit.go` — requires cluster computation before routing, and obstacle-awareness in the router.
-
----
-
-## Medium
-
-### 8. Brandes-Köpf: Only One Alignment
-
-**File:** `position.go` — `assignXCoordinates()`
-
-**Problem:** The Brandes-Köpf algorithm specifies four alignment passes (upper-left, upper-right, lower-left, lower-right) with the final X position being the median of all four. Posit implements only the upper-left alignment, which biases nodes toward the left.
-
-**What msagljs does:** Implements all four alignments and takes the median X for each node.
-
-**Fix:** Implement the remaining three alignments (upper-right, lower-left, lower-right) by reversing layer iteration order and/or reversing the scan direction within layers. Take the median of all four X values for each node.
-
-**Scope:** `position.go` — add three more alignment passes, add median selection.
+`route.go:260-268` — `getPortPosition()` accounts for port `Width`/`Height` when computing center offset. Ports with dimensions are centered on their attachment area.
 
 ---
 
-### 9. Barycenter vs Weighted Median
+## Open Items
 
-**File:** `order.go` — `calculateBarycenter()`
+### 2. Rank Constraints: Post-Hoc Application
 
-**Problem:** Barycenter (arithmetic mean of neighbor positions) is sensitive to outliers. If a node has 10 neighbors at position 0 and 1 neighbor at position 100, the barycenter is ~9, pulling the node far from the majority of its connections.
+**Severity:** Medium (accepted trade-off)
+**File:** `rank.go` — `applyRankMinMax()`, `applyRankGroups()`
 
-**What msagljs does:** Uses weighted median, which is more robust to outlier positions.
+**Current behavior:** Rank constraints are applied after ranking completes. This can produce suboptimal rank assignments for unconstrained nodes because the tight-tree invariant from Network Simplex is violated.
 
-**Fix:** Offer weighted median as an alternative. The median of neighbor positions (weighted by edge weight) resists outlier pull. This could be a configuration option or simply replace barycenter.
+**Why this is acceptable:**
+- Post-hoc application avoids creating contradictions between constraints and edge directions
+- RankGroup members connected by edges would create cycles if encoded as zero-length constraint edges
+- The current approach always produces a valid layout, even if not globally optimal
+- Both dagre and msagljs struggle with this trade-off differently (dagre also uses post-hoc; msagljs has incomplete constraint support with many stubs)
 
-**Scope:** `order.go` — add `calculateWeightedMedian()`, use it in `sortLayerByBarycenter()`.
-
----
-
-### 10. Port-Level Crossing Minimization: O(E²) Edge Scan
-
-**File:** `order.go` — `adjustForPortPositions()`
-
-**Problem:** For each neighbor of each node, the function iterates over all edges in `s.edges` to find matching edges. This is O(E) per neighbor per node, making the whole function O(V × deg × E) which is effectively O(E²) for dense graphs.
-
-**Fix:** Pre-build an edge index by endpoint pair. Use `s.edges[edgeKey{from, to}]` directly (which already exists as a map lookup) instead of iterating all edges. The current code iterates all edges because it needs to check both directions and find port IDs, but this can be restructured.
-
-**Scope:** `order.go` — refactor `adjustForPortPositions()` to use map lookups instead of full iteration.
+**Potential improvement:** Encode constraints as weighted edges in the Network Simplex graph with high weight but allow them to be violated (soft constraints). This would improve quality without risking infeasibility.
 
 ---
-
-### 11. Incremental Layout: Not Truly Incremental
-
-**File:** `posit.go` — `IncrementalLayout()`
-
-**Problem:** The current implementation pins fixed nodes by overriding their X/Y after a full layout run. This means the entire graph is re-laid-out and then fixed nodes are snapped back, which can produce overlaps and edge routing that assumes positions that no longer hold.
-
-**What the doc specifies:** "Keep same layer assignment, re-run Y coordinate assignment, keep X positions fixed for unchanged nodes, re-route affected edges only."
-
-**What msagljs does:** Uses stress minimization with position constraints for fixed nodes, solving for minimal displacement.
-
-**Fix (matching the doc):**
-1. Preserve the original layer assignment (ranks) for all nodes
-2. Apply dimension changes
-3. Re-run only Y coordinate assignment within existing layers
-4. Keep X positions for fixed nodes, run X assignment only for changed nodes
-5. Re-route only edges connected to changed nodes
-
-**Scope:** `posit.go` — rewrite `IncrementalLayout()` to selectively re-run phases.
-
----
-
-### 12. Weight Truncation in Cross Counting
-
-**File:** `order.go` — `twoLayerCrossCount()`
-
-**Problem:** Edge weights are stored as `float64` but cast to `int` for the accumulator tree. Weights between 0 and 1 become 0, and fractional weights are lost.
-
-**Fix:** Either use float64 in the accumulator tree, or scale weights to integers (multiply all by a factor that preserves relative magnitudes).
-
-**Scope:** `order.go` — change `weight` type in `entry` struct and accumulator arithmetic, or add scaling.
-
----
-
-## Low
 
 ### 13. No Edge Label Collision Avoidance
 
-**Problem:** Edge labels are placed at dummy node positions but may overlap with other nodes or labels. No post-processing checks for or resolves label overlaps.
+**Severity:** Low
+**File:** `route.go`
 
-**Fix:** After label positioning, check for bounding box overlaps and nudge labels that collide.
+**Problem:** Edge labels are placed at dummy node positions (or midpoints for short edges) but may overlap with other nodes or labels. No post-processing checks for or resolves label overlaps.
 
-**Scope:** `route.go` or new `labels.go`.
+**What msagljs does:** Complex nudging pass that adjusts edge paths and labels to minimize overlaps.
 
----
+**What dagre does:** Nothing — labels can overlap in dagre too.
 
-### 14. No Port Boundary Curves
-
-**Problem:** Ports are modeled as dimensionless points. msagljs models ports with `ICurve` boundaries for precise edge clipping. This matters when port attachment areas are larger than a single pixel (e.g., a field row in a database node).
-
-**Fix:** Add optional `Width`/`Height` to `PortOptions`. Use port rectangle intersection instead of point when computing edge endpoints.
-
-**Scope:** `posit.go` (API), `route.go` (endpoint computation).
+**Potential fix:** After label positioning, detect bounding box overlaps between labels and nodes/other labels. Nudge labels perpendicular to their edge to resolve collisions.
 
 ---
 
-### 15. Compound Graph: Only Bounding Box Adjustment
+### 15. Compound Graphs: Bounding Box Only
 
-**Problem:** The doc says compound graphs require "changes to every phase of the algorithm — cycle removal, ranking, ordering, and coordinate assignment all need cluster awareness." The current implementation only adjusts bounding boxes after layout, meaning:
-- Child nodes aren't constrained to same/adjacent ranks
-- Cluster nodes don't participate in ordering as atomic units
-- Coordinate assignment doesn't reserve space for cluster padding
+**Severity:** Low
+**File:** All layout phases
 
-**Fix:** This is a large architectural change. For a minimal improvement:
-- During ranking, constrain all children of a cluster to consecutive ranks
-- During ordering, treat cluster contents as a contiguous block
-- During coordinate assignment, add cluster padding to node spacing
+**Problem:** Clusters are implemented as post-hoc bounding box computation. Child nodes aren't constrained to consecutive ranks during ranking, and cluster contents aren't treated as atomic blocks during ordering.
 
-**Scope:** All layout phases. Defer until critical/high items are resolved.
+**Current mitigations already implemented:**
+- Rank phase: `applyRankGroups()` moves cluster children to minimum rank
+- Rank phase: Cluster rank adjacency enforcement ensures children occupy consecutive ranks
+- Order phase: `enforceClusterAdjacency()` keeps cluster children together within their layer
+- Route phase: Cluster bounding boxes are routing obstacles
+
+**What's missing for full compound graph support (msagljs-style):**
+- Border nodes (top/bottom dummy nodes constraining subgraph extent) — dagre uses this
+- Cluster-aware coordinate assignment (reserve padding space in position phase)
+- Edge routing that enters/exits clusters at defined border points
+- Nested cluster support (clusters within clusters)
+
+**Assessment:** Current implementation handles the common case (visual grouping with routing avoidance). Full compound graph support is a major architectural change with limited practical benefit for most use cases.
 
 ---
 
-## Summary
+## New Issues from Code Review
 
-| # | Issue | Severity | File(s) | Effort |
-|---|-------|----------|---------|--------|
-| 1 | Orthogonal routing: no node avoidance/spacing | Critical | route.go | High |
-| 2 | Rank constraints: post-hoc breaks invariants | Critical | rank.go | Medium |
-| 3 | Component discovery includes dummies | Critical | components.go | Low |
-| 4 | No adjacent exchange in crossing min | High | order.go | Low |
-| 5 | Port coords not direction-transformed | High | route.go | Low |
-| 6 | Multi-edge offset only at endpoints | High | route.go | Medium |
-| 7 | Clusters don't affect routing | High | route.go, posit.go | High |
-| 8 | Brandes-Köpf: one alignment only | Medium | position.go | Medium |
-| 9 | Barycenter vs weighted median | Medium | order.go | Low |
-| 10 | Port crossing min: O(E²) scan | Medium | order.go | Low |
-| 11 | Incremental layout: full re-layout | Medium | posit.go | High |
-| 12 | Weight truncation in cross count | Medium | order.go | Low |
-| 13 | No label collision avoidance | Low | route.go | Medium |
-| 14 | No port boundary curves | Low | posit.go, route.go | Low |
-| 15 | Compound graphs: bbox only | Low | all phases | Very High |
+### 16. Type-1 Conflict Detection: Adjacent Layers Only
 
-### Recommended Order
+**Severity:** Low
+**File:** `position.go:220-250` — `findType1Conflicts()`
 
-**First pass (low-hanging fruit):** 3, 4, 5, 10, 12 — all low effort, fix correctness bugs and performance issues.
+**Problem:** Inner segment (dummy-to-dummy edge) detection only checks between adjacent layers. A dummy chain spanning 3+ layers creates multiple inner segments, all of which are found individually, but the conflict check for a non-inner edge crossing a multi-layer dummy path relies on each pair being detected separately. This is correct but could miss edge cases where an alignment would cross a segment pair that isn't individually detected.
 
-**Second pass (correctness):** 2, 6, 8 — medium effort, fix algorithmic correctness.
+**Impact:** Suboptimal alignment quality in rare cases. Not a correctness bug — layouts are still valid, just potentially wider than necessary.
 
-**Third pass (features):** 1, 9, 11 — higher effort, bring orthogonal routing and incremental layout to spec.
+**What dagre does:** Same approach (adjacent-layer only). This is standard for Brandes-Kopf.
 
-**Deferred:** 7, 13, 14, 15 — depend on architectural decisions about clusters and labels.
+---
+
+### 17. Incremental Layout Re-Runs Full Ordering
+
+**Severity:** Low
+**File:** `posit.go:683-686`
+
+**Problem:** `IncrementalLayout()` re-runs `minimizeCrossings()` from scratch. For graphs where only node dimensions changed (not topology), the ordering phase could be skipped entirely since layer assignment is the same.
+
+**Impact:** Performance only. For the target graph sizes (<1000 nodes), this adds negligible time.
+
+**Potential fix:** Skip ordering when `changes.Changes` only contains dimension updates and no structural changes to edges/nodes.
+
+---
+
+### 18. Cross Count Return Truncates to Int
+
+**Severity:** Low
+**File:** `order.go:428` — `return int(cc)`
+
+**Problem:** The accumulator tree computes crossings in `float64` (because edge weights are float64) but returns `int`. For fractional weights, this loses precision in the comparison. Two orderings with crossing counts 5.3 and 5.7 would both return 5.
+
+**Impact:** Minimal in practice — edge weights are typically integers (default 1.0), and the comparison `after < before` in adjacentExchange would need sub-1.0 differences to matter.
+
+**Potential fix:** Return `float64` from `twoLayerCrossCount()` and compare floats in `crossingsInvolving()` and `countCrossings()`.
+
+---
+
+## Comparison Notes
+
+### Posit vs Dagre
+
+| Aspect | Dagre | Posit | Winner |
+|--------|-------|-------|--------|
+| Crossing minimization | Barycenter + accumulator tree | Weighted median + accumulator tree + adjacent exchange | Posit |
+| Coordinate assignment | Brandes-Kopf (4 alignments) | BK (4 alignments) + simple fallback for large graphs | Posit |
+| Ranking | Network Simplex only | LongestPath + TightTree + NetworkSimplex (selectable) | Posit |
+| Compound graphs | Border nodes (full support) | Bounding box + routing obstacles | Dagre |
+| Edge routing | Polyline via dummies | Polyline + orthogonal with obstacle avoidance | Posit |
+| Multi-edge | Merged visually | Full polyline offset with perpendicular spacing | Posit |
+| Port support | None | Full (directional, sized, ordering-aware) | Posit |
+| Direction support | 4 directions (TB, LR, RL, BT) | 4 directions with port transform | Posit |
+| Incremental layout | None | Partial (X-pinning) | Posit |
+| Determinism | Order-dependent | Fully deterministic (sorted iteration) | Posit |
+
+### Posit vs MSAGL.js
+
+| Aspect | MSAGL.js | Posit | Winner |
+|--------|----------|-------|--------|
+| Edge routing | Rectilinear visibility graph + nudging | Channel-based orthogonal with obstacles | MSAGL.js |
+| Spline routing | Full spline support | Not implemented | MSAGL.js |
+| Constraint solver | Partial (many stubs) | Working post-hoc constraints | Posit |
+| Force-directed | iPsepCola with multipole approx | Not implemented | MSAGL.js |
+| Code completeness | ~70% (many `not implemented` stubs) | ~100% | Posit |
+| Implementation quality | Professional but incomplete | Complete and tested | Posit |
+| Dependencies | Complex TypeScript with many modules | Zero dependencies (pure Go) | Posit |
+
+### Key Algorithmic Advantages Over Both References
+
+1. **Weighted median** (vs dagre's barycenter): More robust to outlier positions
+2. **Adaptive algorithm selection** (BK threshold): Avoids O(V^2) BK on large graphs
+3. **Port-aware ordering**: Neither dagre nor msagljs adjust layer ordering for port positions
+4. **Orthogonal routing with obstacle avoidance + channel spacing**: Dagre has no orthogonal mode; msagljs's is more sophisticated but incomplete in the JS port
+5. **Full multi-edge polyline offset**: Dagre merges multi-edges; msagljs handles them but with more complexity

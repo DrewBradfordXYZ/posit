@@ -968,7 +968,7 @@ func (s *layoutState) precomputePortOrder() {
 		// Check if any ports need precomputation
 		hasComputed := false
 		for _, port := range node.ports {
-			if port.Constraint == PortFixedSide || port.Constraint == PortFixedOrder || port.Constraint == PortFree {
+			if port.Constraint == PortFixedSide || port.Constraint == PortFixedOrder || port.Constraint == PortFree || port.Constraint == PortFixedOffset {
 				hasComputed = true
 				break
 			}
@@ -977,14 +977,14 @@ func (s *layoutState) precomputePortOrder() {
 			continue
 		}
 
-		// For PortFree ports, assign a preliminary side based on layer/order info
+		// For PortFree/PortFixedOffset ports, assign a preliminary side based on layer/order info
 		s.preassignFreeSides(node)
 
 		// Group port indices by (internal) side
 		sideGroups := map[Side][]int{}
 		for i := range node.ports {
 			port := &node.ports[i]
-			if port.Constraint == PortFixedSide || port.Constraint == PortFixedOrder || port.Constraint == PortFree {
+			if port.Constraint == PortFixedSide || port.Constraint == PortFixedOrder || port.Constraint == PortFree || port.Constraint == PortFixedOffset {
 				side := s.portSideToInternal(port.Side)
 				sideGroups[side] = append(sideGroups[side], i)
 			}
@@ -997,50 +997,25 @@ func (s *layoutState) precomputePortOrder() {
 	}
 }
 
-// preassignFreeSides assigns a preliminary side to PortFree ports during crossing
-// minimization using layer/order information (no coordinates available yet).
-// In a top-to-bottom layout: different rank → Top/Bottom, same rank → Left/Right.
+// preassignFreeSides assigns a preliminary side to PortFree and PortFixedOffset ports
+// during crossing minimization using layer/order information (no coordinates available yet).
+// Uses the direction-aware transform so sides are correct in user space.
 func (s *layoutState) preassignFreeSides(node *layoutNode) {
 	for i := range node.ports {
 		port := &node.ports[i]
-		if port.Constraint != PortFree {
+		if port.Constraint != PortFree && port.Constraint != PortFixedOffset {
 			continue
 		}
 
 		// Compute average rank/order delta to connected nodes
+		// dRank = internal y direction (layer), dOrder = internal x direction (within-layer)
 		dRank, dOrder := s.portConnectedLayerDelta(node, port.ID)
 
-		// Pick side based on which axis has more separation
-		// dRank > 0 means connected nodes are below → Bottom
-		// dOrder > 0 means connected nodes are to the right → Right
-		switch port.Axis {
-		case PortAxisHorizontal:
-			if dOrder >= 0 {
-				port.Side = Right
-			} else {
-				port.Side = Left
-			}
-		case PortAxisVertical:
-			if dRank >= 0 {
-				port.Side = Bottom
-			} else {
-				port.Side = Top
-			}
-		default: // PortAxisAny
-			if abs(dRank) > abs(dOrder) {
-				if dRank >= 0 {
-					port.Side = Bottom
-				} else {
-					port.Side = Top
-				}
-			} else {
-				if dOrder >= 0 {
-					port.Side = Right
-				} else {
-					port.Side = Left
-				}
-			}
-		}
+		// Transform from internal space (dOrder=x, dRank=y) to user space
+		dx, dy := s.internalToUserDirection(dOrder, dRank)
+
+		// Pick side using the same logic as assignFreeSides
+		port.Side = s.bestSide(dx, dy, port.Axis)
 	}
 }
 
@@ -1069,13 +1044,6 @@ func (s *layoutState) portConnectedLayerDelta(node *layoutNode, portID string) (
 	return dRank, dOrder
 }
 
-func abs(x float64) float64 {
-	if x < 0 {
-		return -x
-	}
-	return x
-}
-
 // precomputeSideOrder sorts ports on one side of a node and assigns temporary offsets
 // based on layer ordering of connected nodes.
 func (s *layoutState) precomputeSideOrder(node *layoutNode, side Side, indices []int) {
@@ -1092,10 +1060,19 @@ func (s *layoutState) precomputeSideOrder(node *layoutNode, side Side, indices [
 		sideLength = node.width
 	}
 
-	// Sort by the appropriate criteria
-	sort.SliceStable(indices, func(a, b int) bool {
-		portA := &node.ports[indices[a]]
-		portB := &node.ports[indices[b]]
+	// Separate PortFixedOffset ports (their offsets are preserved)
+	var computeIndices []int
+	for _, idx := range indices {
+		if node.ports[idx].Constraint == PortFixedOffset {
+			continue
+		}
+		computeIndices = append(computeIndices, idx)
+	}
+
+	// Sort computed ports by the appropriate criteria
+	sort.SliceStable(computeIndices, func(a, b int) bool {
+		portA := &node.ports[computeIndices[a]]
+		portB := &node.ports[computeIndices[b]]
 
 		if portA.Constraint == PortFixedOrder && portB.Constraint == PortFixedOrder {
 			return portA.Order < portB.Order
@@ -1107,9 +1084,9 @@ func (s *layoutState) precomputeSideOrder(node *layoutNode, side Side, indices [
 		return posA < posB
 	})
 
-	// Assign temporary evenly-distributed offsets
-	count := len(indices)
-	for rank, idx := range indices {
+	// Assign temporary evenly-distributed offsets (only for non-fixed ports)
+	count := len(computeIndices)
+	for rank, idx := range computeIndices {
 		node.ports[idx].Offset = sideLength * float64(rank+1) / float64(count+1)
 	}
 }

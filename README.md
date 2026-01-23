@@ -9,7 +9,7 @@ Posit computes X/Y positions for nodes in a directed graph, arranging them in hi
 - Zero external dependencies (standard library only)
 - Deterministic layout (same input always produces same output)
 - Four layout directions (TopToBottom, LeftToRight, BottomToTop, RightToLeft)
-- Ports with flexible constraints (FixedPos, FixedSide, FixedOrder, Free)
+- Ports with flexible constraints (FixedPos, FixedSide, FixedOrder, Free, FixedOffset)
 - Port axis constraints (horizontal-only, vertical-only, any)
 - Edge labels with automatic positioning
 - Compound graphs (nested clusters)

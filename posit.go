@@ -265,6 +265,11 @@ const (
 	// The side is selected based on the position of the connected node.
 	// Use the Axis field to restrict which sides are considered.
 	PortFree
+	// PortFixedOffset preserves the declared Offset but lets the algorithm
+	// choose the side based on connected node positions. Use Axis to restrict
+	// which sides are considered. Ideal for schema diagrams where field rows
+	// have fixed Y positions but the port side depends on the peer node's location.
+	PortFixedOffset
 )
 
 // PortAxis constrains which sides PortFree considers.
@@ -391,8 +396,9 @@ type NodeLayout struct {
 	Position
 	Width  float64
 	Height float64
-	// Ports contains computed port positions for nodes with PortFixedSide or
-	// PortFixedOrder constraints. Nil for nodes with only PortFixedPos ports.
+	// Ports contains computed port positions for nodes with PortFixedSide,
+	// PortFixedOrder, PortFree, or PortFixedOffset constraints.
+	// Nil for nodes with only PortFixedPos ports.
 	Ports map[string]PortLayout
 }
 

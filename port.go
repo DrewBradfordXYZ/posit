@@ -18,7 +18,7 @@ func (s *layoutState) computePortOffsets() {
 		// Check if any ports need computation
 		hasComputed := false
 		for _, port := range node.ports {
-			if port.Constraint == PortFixedSide || port.Constraint == PortFixedOrder || port.Constraint == PortFree {
+			if port.Constraint == PortFixedSide || port.Constraint == PortFixedOrder || port.Constraint == PortFree || port.Constraint == PortFixedOffset {
 				hasComputed = true
 				break
 			}
@@ -34,7 +34,7 @@ func (s *layoutState) computePortOffsets() {
 		sideGroups := map[Side][]int{}
 		for i := range node.ports {
 			port := &node.ports[i]
-			if port.Constraint == PortFixedSide || port.Constraint == PortFixedOrder || port.Constraint == PortFree {
+			if port.Constraint == PortFixedSide || port.Constraint == PortFixedOrder || port.Constraint == PortFree || port.Constraint == PortFixedOffset {
 				side := s.portSideToInternal(port.Side)
 				sideGroups[side] = append(sideGroups[side], i)
 			}
@@ -46,7 +46,7 @@ func (s *layoutState) computePortOffsets() {
 	}
 }
 
-// assignFreeSides determines the best side for each PortFree port on a node.
+// assignFreeSides determines the best side for each PortFree/PortFixedOffset port on a node.
 // Uses the position of connected nodes relative to this node's center.
 func (s *layoutState) assignFreeSides(node *layoutNode) {
 	nodeCX := node.x + node.width/2
@@ -54,15 +54,37 @@ func (s *layoutState) assignFreeSides(node *layoutNode) {
 
 	for i := range node.ports {
 		port := &node.ports[i]
-		if port.Constraint != PortFree {
+		if port.Constraint != PortFree && port.Constraint != PortFixedOffset {
 			continue
 		}
 
-		// Find average direction to connected nodes
+		// Find average direction to connected nodes (in internal coordinates)
 		dx, dy := s.portConnectedDirection(node.id, port.ID, nodeCX, nodeCY)
+
+		// Transform from internal coordinate space to user space
+		dx, dy = s.internalToUserDirection(dx, dy)
 
 		// Pick the best side based on direction and axis constraint
 		port.Side = s.bestSide(dx, dy, port.Axis)
+	}
+}
+
+// internalToUserDirection transforms a direction vector from internal layout space
+// to user-visible space. In internal space, layout always proceeds as TopToBottom
+// (y = rank direction, x = within-layer). This maps it to the user's Direction.
+func (s *layoutState) internalToUserDirection(dx, dy float64) (float64, float64) {
+	switch s.opts.Direction {
+	case LeftToRight:
+		// Internal y (rank) → user x, internal x (order) → user y
+		return dy, dx
+	case RightToLeft:
+		// Internal y (rank) reversed → user x, internal x (order) → user y
+		return -dy, dx
+	case BottomToTop:
+		// Internal x → user x, internal y reversed → user y
+		return dx, -dy
+	default: // TopToBottom
+		return dx, dy
 	}
 }
 
@@ -133,10 +155,20 @@ func (s *layoutState) computeSideOffsets(node *layoutNode, side Side, indices []
 		sideLength = node.width
 	}
 
-	// Sort indices by the appropriate criteria
-	sort.SliceStable(indices, func(a, b int) bool {
-		portA := &node.ports[indices[a]]
-		portB := &node.ports[indices[b]]
+	// Separate PortFixedOffset ports (offset preserved) from ports needing computation
+	var computeIndices []int
+	for _, idx := range indices {
+		if node.ports[idx].Constraint == PortFixedOffset {
+			// Offset stays as declared — no computation needed
+			continue
+		}
+		computeIndices = append(computeIndices, idx)
+	}
+
+	// Sort computed ports by the appropriate criteria
+	sort.SliceStable(computeIndices, func(a, b int) bool {
+		portA := &node.ports[computeIndices[a]]
+		portB := &node.ports[computeIndices[b]]
 
 		if portA.Constraint == PortFixedOrder && portB.Constraint == PortFixedOrder {
 			// Both PortFixedOrder: sort by declared Order
@@ -149,9 +181,9 @@ func (s *layoutState) computeSideOffsets(node *layoutNode, side Side, indices []
 		return posA < posB
 	})
 
-	// Compute evenly-distributed offsets
-	count := len(indices)
-	for rank, idx := range indices {
+	// Compute evenly-distributed offsets for non-fixed ports
+	count := len(computeIndices)
+	for rank, idx := range computeIndices {
 		node.ports[idx].Offset = sideLength * float64(rank+1) / float64(count+1)
 	}
 }

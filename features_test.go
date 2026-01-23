@@ -705,6 +705,225 @@ func TestPortFree_VerticalAxis(t *testing.T) {
 	}
 }
 
+// ==================== PortFixedOffset Tests ====================
+
+func TestPortFixedOffset_SideSelection(t *testing.T) {
+	// PortFixedOffset: algorithm chooses side, offset preserved.
+	// B is to the right of A, so A's port should be on the Right side.
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{
+		Width: 100, Height: 80,
+		Ports: []PortOptions{
+			{ID: "p1", Offset: 44, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+		},
+	})
+	g.AddNode("B", NodeOptions{
+		Width: 100, Height: 80,
+		Ports: []PortOptions{
+			{ID: "p2", Offset: 44, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+		},
+	})
+	g.MustAddEdge("A", "B", EdgeOptions{SourcePort: "p1", TargetPort: "p2"})
+
+	layout := g.Layout(Options{Direction: LeftToRight, NodeSep: 50, RankSep: 100})
+
+	nodeA := layout.Nodes["A"]
+	if nodeA.Ports == nil {
+		t.Fatal("Expected Ports map for PortFixedOffset node A")
+	}
+	p1 := nodeA.Ports["p1"]
+	// B is to the right of A → port should be on Right
+	if p1.Side != Right {
+		t.Errorf("Expected Right side (B is right of A), got %v", p1.Side)
+	}
+
+	nodeB := layout.Nodes["B"]
+	if nodeB.Ports == nil {
+		t.Fatal("Expected Ports map for PortFixedOffset node B")
+	}
+	p2 := nodeB.Ports["p2"]
+	// A is to the left of B → port should be on Left
+	if p2.Side != Left {
+		t.Errorf("Expected Left side (A is left of B), got %v", p2.Side)
+	}
+}
+
+func TestPortFixedOffset_OffsetPreserved(t *testing.T) {
+	// The declared offset should appear unchanged in output regardless of computed side.
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{
+		Width: 200, Height: 100,
+		Ports: []PortOptions{
+			{ID: "field-3", Offset: 44, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+			{ID: "field-18", Offset: 69, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+		},
+	})
+	g.AddNode("B", NodeOptions{Width: 200, Height: 100})
+	g.MustAddEdge("A", "B", EdgeOptions{SourcePort: "field-3"})
+	g.MustAddEdge("A", "B", EdgeOptions{SourcePort: "field-18", ID: "e2"})
+
+	layout := g.Layout(Options{Direction: LeftToRight, NodeSep: 50, RankSep: 100})
+
+	nodeA := layout.Nodes["A"]
+	if nodeA.Ports == nil {
+		t.Fatal("Expected Ports map")
+	}
+
+	if p := nodeA.Ports["field-3"]; p.Offset != 44 {
+		t.Errorf("field-3 offset: got %v, want 44", p.Offset)
+	}
+	if p := nodeA.Ports["field-18"]; p.Offset != 69 {
+		t.Errorf("field-18 offset: got %v, want 69", p.Offset)
+	}
+}
+
+func TestPortFixedOffset_AxisConstraint(t *testing.T) {
+	// PortAxisHorizontal restricts to Left/Right only, even in top-to-bottom layout.
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{
+		Width: 100, Height: 80,
+		Ports: []PortOptions{
+			{ID: "p1", Offset: 40, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+		},
+	})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 80})
+	g.MustAddEdge("A", "B", EdgeOptions{SourcePort: "p1"})
+
+	layout := g.Layout() // TopToBottom default
+
+	nodeA := layout.Nodes["A"]
+	if nodeA.Ports == nil {
+		t.Fatal("Expected Ports map")
+	}
+	p1 := nodeA.Ports["p1"]
+	if p1.Side != Left && p1.Side != Right {
+		t.Errorf("PortAxisHorizontal: expected Left or Right, got %v", p1.Side)
+	}
+	// Offset must be preserved
+	if p1.Offset != 40 {
+		t.Errorf("Expected offset 40, got %v", p1.Offset)
+	}
+}
+
+func TestPortFixedOffset_MultiplePortsSameNode(t *testing.T) {
+	// Multiple PortFixedOffset ports on the same node maintain their declared offsets.
+	g := NewGraph()
+	g.AddNode("hub", NodeOptions{
+		Width: 200, Height: 120,
+		Ports: []PortOptions{
+			{ID: "f1", Offset: 20, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+			{ID: "f2", Offset: 45, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+			{ID: "f3", Offset: 70, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+			{ID: "f4", Offset: 95, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+		},
+	})
+	g.AddNode("right1", NodeOptions{Width: 100, Height: 60})
+	g.AddNode("right2", NodeOptions{Width: 100, Height: 60})
+	g.MustAddEdge("hub", "right1", EdgeOptions{SourcePort: "f1"})
+	g.MustAddEdge("hub", "right1", EdgeOptions{SourcePort: "f2", ID: "e2"})
+	g.MustAddEdge("hub", "right2", EdgeOptions{SourcePort: "f3"})
+	g.MustAddEdge("hub", "right2", EdgeOptions{SourcePort: "f4", ID: "e4"})
+
+	layout := g.Layout(Options{Direction: LeftToRight, NodeSep: 50, RankSep: 100})
+
+	hubLayout := layout.Nodes["hub"]
+	if hubLayout.Ports == nil {
+		t.Fatal("Expected Ports map for hub")
+	}
+
+	// All offsets should be preserved exactly
+	expectedOffsets := map[string]float64{"f1": 20, "f2": 45, "f3": 70, "f4": 95}
+	for id, want := range expectedOffsets {
+		got := hubLayout.Ports[id].Offset
+		if got != want {
+			t.Errorf("Port %s offset: got %v, want %v", id, got, want)
+		}
+	}
+}
+
+func TestPortFixedOffset_SchemaPattern(t *testing.T) {
+	// Hub node with FK fields connecting to nodes in various directions.
+	// Each port gets correct side based on connected node position.
+	g := NewGraph()
+	g.AddNode("users", NodeOptions{
+		Width: 200, Height: 100,
+		Ports: []PortOptions{
+			{ID: "fk-orders", Offset: 34, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+			{ID: "fk-profiles", Offset: 54, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+		},
+	})
+	g.AddNode("orders", NodeOptions{Width: 200, Height: 80})
+	g.AddNode("profiles", NodeOptions{Width: 200, Height: 80})
+
+	g.MustAddEdge("users", "orders", EdgeOptions{SourcePort: "fk-orders"})
+	g.MustAddEdge("users", "profiles", EdgeOptions{SourcePort: "fk-profiles"})
+
+	layout := g.Layout(Options{Direction: LeftToRight, NodeSep: 50, RankSep: 100})
+
+	usersLayout := layout.Nodes["users"]
+	if usersLayout.Ports == nil {
+		t.Fatal("Expected Ports map for users")
+	}
+
+	// Both connected nodes are to the right in LTR layout → ports should be Right
+	if p := usersLayout.Ports["fk-orders"]; p.Side != Right {
+		t.Errorf("fk-orders: expected Right, got %v", p.Side)
+	}
+	if p := usersLayout.Ports["fk-profiles"]; p.Side != Right {
+		t.Errorf("fk-profiles: expected Right, got %v", p.Side)
+	}
+
+	// Offsets preserved
+	if p := usersLayout.Ports["fk-orders"]; p.Offset != 34 {
+		t.Errorf("fk-orders offset: got %v, want 34", p.Offset)
+	}
+	if p := usersLayout.Ports["fk-profiles"]; p.Offset != 54 {
+		t.Errorf("fk-profiles offset: got %v, want 54", p.Offset)
+	}
+}
+
+func TestPortFixedOffset_MixedWithFree(t *testing.T) {
+	// PortFixedOffset and PortFree ports on the same node.
+	// PortFixedOffset offsets preserved, PortFree offsets computed.
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{
+		Width: 200, Height: 100,
+		Ports: []PortOptions{
+			{ID: "fixed1", Offset: 30, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+			{ID: "free1", Constraint: PortFree, Axis: PortAxisHorizontal},
+			{ID: "fixed2", Offset: 70, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+		},
+	})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 60})
+	g.MustAddEdge("A", "B", EdgeOptions{SourcePort: "fixed1"})
+	g.MustAddEdge("A", "B", EdgeOptions{SourcePort: "free1", ID: "e2"})
+	g.MustAddEdge("A", "B", EdgeOptions{SourcePort: "fixed2", ID: "e3"})
+
+	layout := g.Layout(Options{Direction: LeftToRight, NodeSep: 50, RankSep: 100})
+
+	nodeA := layout.Nodes["A"]
+	if nodeA.Ports == nil {
+		t.Fatal("Expected Ports map")
+	}
+
+	// PortFixedOffset offsets preserved
+	if p := nodeA.Ports["fixed1"]; p.Offset != 30 {
+		t.Errorf("fixed1 offset: got %v, want 30", p.Offset)
+	}
+	if p := nodeA.Ports["fixed2"]; p.Offset != 70 {
+		t.Errorf("fixed2 offset: got %v, want 70", p.Offset)
+	}
+
+	// PortFree offset should be computed (not 0, not same as fixed offsets)
+	freePort := nodeA.Ports["free1"]
+	if freePort.Offset == 0 {
+		t.Error("PortFree offset should be computed, got 0")
+	}
+	if freePort.Offset == 30 || freePort.Offset == 70 {
+		t.Errorf("PortFree offset should differ from fixed offsets, got %v", freePort.Offset)
+	}
+}
+
 // ==================== Side Inference Tests ====================
 
 func TestSideInference_TopToBottom(t *testing.T) {

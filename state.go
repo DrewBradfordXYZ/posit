@@ -228,7 +228,7 @@ func (s *layoutState) buildLayout() *Layout {
 
 		// Export computed port positions for auto-positioned ports
 		for _, port := range n.ports {
-			if port.Constraint == PortFixedSide || port.Constraint == PortFixedOrder || port.Constraint == PortFree {
+			if port.Constraint == PortFixedSide || port.Constraint == PortFixedOrder || port.Constraint == PortFree || port.Constraint == PortFixedOffset {
 				if nodeLayout.Ports == nil {
 					nodeLayout.Ports = make(map[string]PortLayout)
 				}

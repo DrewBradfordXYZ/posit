@@ -1058,10 +1058,9 @@ func (s *layoutState) resolveEdgeLabelCollisions() {
 	}
 }
 
-// restoreSelfLoops generates curved paths for self-referential edges.
-// Self-loops exit and re-enter from the right side of the node.
-// When ports are specified, the start/end points align with port Y offsets.
-// Interior waypoints extend rightward to form a visible loop arc.
+// restoreSelfLoops generates paths for self-referential edges.
+// Self-loops attach at the top-center of the node with a slight horizontal
+// offset so the bezier curve naturally forms a circular arc above the node.
 func (s *layoutState) restoreSelfLoops() {
 	for _, edge := range s.selfLoops {
 		node := s.nodes[edge.key.from]
@@ -1069,48 +1068,19 @@ func (s *layoutState) restoreSelfLoops() {
 			continue
 		}
 
-		right := node.x + node.width
-		loopOffset := s.opts.NodeSep * 0.6
-		if loopOffset < 40 {
-			loopOffset = 40
-		}
+		cx := node.x + node.width/2
+		top := node.y
+		portSpread := 8.0 // horizontal offset from center for each port
 
-		// Resolve start/end Y from port offsets directly (bypass getPortPosition
-		// since PortFixedOffset ports don't have Side pre-set; we know it's Right)
-		var startY, endY float64
-		startY = node.y + node.height/3 // default
-		if edge.sourcePort != "" {
-			for _, p := range node.ports {
-				if p.ID == edge.sourcePort {
-					startY = node.y + p.Offset
-					break
-				}
-			}
-		}
-
-		endY = node.y + node.height*2/3 // default
-		if edge.targetPort != "" {
-			for _, p := range node.ports {
-				if p.ID == edge.targetPort {
-					endY = node.y + p.Offset
-					break
-				}
-			}
-		}
-
-		// Generate loop path: start, two waypoints extending right, end
+		// Two points at top-center: bezier handles the arc
 		edge.points = []EdgePoint{
-			{X: right, Y: startY},              // Start: right side at source port
-			{X: right + loopOffset, Y: startY}, // Extend right from source
-			{X: right + loopOffset, Y: endY},   // Extend right at target level
-			{X: right, Y: endY},                // End: right side at target port
+			{X: cx - portSpread, Y: top},
+			{X: cx + portSpread, Y: top},
 		}
 
-		// Set sides (in internal space - Right for TopToBottom layout)
-		edge.sourceSide = Right
-		edge.targetSide = Right
+		edge.sourceSide = Top
+		edge.targetSide = Top
 
-		// Add back to edges map
 		s.edges[edge.key] = edge
 	}
 }

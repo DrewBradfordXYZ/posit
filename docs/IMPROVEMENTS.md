@@ -1,6 +1,6 @@
 # Posit Roadmap
 
-Planned improvements to Posit as a general-purpose layered graph layout library.
+This roadmap is **complete** — all planned improvements have been implemented. The sections below document the design rationale and API for each feature.
 
 ## Design Advantage
 
@@ -14,20 +14,25 @@ Posit runs as a single computation over the entire graph. Unlike client-side ren
 
 Each improvement below leverages this global knowledge. The library computes what requires seeing the full picture; consumers handle aesthetics (curve rendering, colors, interaction).
 
-## Current Capabilities
-
-Posit implements the core Sugiyama framework:
+## Implemented Features
 
 - **Cycle removal:** DFS-based and Greedy FAS (Eades/Lin/Smyth)
 - **Ranking:** LongestPath, TightTree, NetworkSimplex
-- **Crossing minimization:** Barycenter heuristic with layer sweeps
+- **Rank constraints:** Pin nodes to first/last layer, group to same layer
+- **Crossing minimization:** Barycenter heuristic with layer sweeps, adjacent exchange, port-level optimization
+- **Order constraints:** Group nodes adjacently, control priority within groups
 - **Coordinate assignment:** Brandes-Köpf (optimal) with simple fallback for large graphs
-- **Edge routing:** Polyline paths through dummy nodes with boundary intersection
+- **Edge routing:** Polyline and orthogonal (channel-routed) with parallel edge spacing
+- **Ports:** Five constraint modes (FixedPos, FixedSide, FixedOrder, Free, FixedOffset) with axis constraints
+- **Edge labels:** Automatic positioning via label dummy nodes (left/center/right placement)
+- **Edge weight:** Priority-based layout (crossing minimization, cycle removal)
+- **Side inference:** Computed SourceSide/TargetSide on all edges
 - **Directions:** TopToBottom, LeftToRight, BottomToTop, RightToLeft
-- **Edge labels:** Automatic positioning via label dummy nodes
+- **Multi-edge:** Distinct parallel edges with perpendicular offset spacing
 - **Self-loops:** Curved path rendering
-- **Duplicate edges:** Weight aggregation
-- **Disconnected components:** Handled correctly in all phases (no overlaps)
+- **Disconnected components:** Horizontal/vertical packing with configurable gap
+- **Incremental layout:** Minimal update from prior layout (preserves mental map)
+- **Compound graphs:** Nested clusters with padding, sized to contain children
 
 ## Non-Goals
 
@@ -44,10 +49,7 @@ Posit is a layered (Sugiyama) layout library. The following are out of scope:
 
 ---
 
-## 1. Rank Constraints
-
-**Priority:** Very High
-**Effort:** Low
+## 1. Rank Constraints ✅
 
 ### Concept
 
@@ -96,100 +98,114 @@ This runs after initial rank assignment and before normalization. For NetworkSim
 
 ---
 
-## 2. Port Support
-
-**Priority:** High
-**Effort:** Medium
+## 2. Port Support ✅
 
 ### Concept
 
 Ports are fixed connection points at specific positions on a node. Without ports, edges connect to node boundaries using rectangle intersection. With ports, edges connect to precise, named locations.
 
-This is a standard feature in ELK and Graphviz but absent from dagre (Posit's reference implementation).
+### Port Constraint Modes
 
-### Use Cases
+| Constraint | Side | Offset | Use Case |
+|---|---|---|---|
+| `PortFixedPos` | Fixed | Fixed | Exact pixel positions (default) |
+| `PortFixedSide` | Fixed | Computed | Keep on declared side, optimize offset |
+| `PortFixedOrder` | Fixed | Computed (ordered) | Preserve relative order, even spacing |
+| `PortFree` | Computed | Computed | Algorithm chooses both side and offset |
+| `PortFixedOffset` | Computed | Fixed | Fixed offset, algorithm chooses side |
 
-- Database schema diagrams: edges connect to specific field rows
-- Circuit diagrams: components have labeled input/output pins
-- UML class diagrams: associations connect to specific attributes
-- Data flow diagrams: nodes have named input/output channels
+### Axis Constraints
 
-### API Design
+`PortFree` and `PortFixedOffset` support axis constraints to restrict which sides are considered:
+
+- `PortAxisAny` — any side (default)
+- `PortAxisHorizontal` — Left or Right only
+- `PortAxisVertical` — Top or Bottom only
+
+### API
 
 ```go
-type Side int
+type PortConstraint int
 
 const (
-    Left Side = iota
-    Right
-    Top
-    Bottom
+    PortFixedPos    PortConstraint = iota
+    PortFixedSide
+    PortFixedOrder
+    PortFree
+    PortFixedOffset
+)
+
+type PortAxis int
+
+const (
+    PortAxisAny PortAxis = iota
+    PortAxisHorizontal
+    PortAxisVertical
 )
 
 type PortOptions struct {
-    ID     string  // Unique within the node (e.g., "in-1", "out-2")
-    Side   Side    // Which side of the node
-    Offset float64 // Distance from node origin along the side
-}
-
-type NodeOptions struct {
-    Width  float64
-    Height float64
-    Ports  []PortOptions // Optional: fixed connection points
-}
-
-type EdgeOptions struct {
-    SourcePort string // Connect to this port on source node
-    TargetPort string // Connect to this port on target node
-    // ... existing label options ...
-}
-```
-
-### Edge Routing with Ports
-
-When an edge specifies ports, routing uses the port's absolute position instead of boundary intersection:
-
-```go
-func (s *layoutState) getEdgeEndpoint(node *layoutNode, portID string) EdgePoint {
-    if port, ok := node.ports[portID]; ok {
-        switch port.Side {
-        case Right:
-            return EdgePoint{X: node.x + node.width, Y: node.y + port.Offset}
-        case Left:
-            return EdgePoint{X: node.x, Y: node.y + port.Offset}
-        case Bottom:
-            return EdgePoint{X: node.x + port.Offset, Y: node.y + node.height}
-        case Top:
-            return EdgePoint{X: node.x + port.Offset, Y: node.y}
-        }
-    }
-    // Fallback: boundary intersection for nodes without ports
-    return s.intersectRect(node, target)
+    ID         string
+    Side       Side
+    Offset     float64
+    Order      int            // For PortFixedOrder
+    Constraint PortConstraint // Default: PortFixedPos
+    Axis       PortAxis       // For PortFree/PortFixedOffset
+    Width      float64
+    Height     float64
 }
 ```
 
 ### Output
 
+Nodes with computed ports include a `Ports` map in the layout output:
+
 ```go
-type EdgeLayout struct {
-    From       string
-    To         string
-    Points     []EdgePoint
-    SourcePort string // Which port the edge exits from (if specified)
-    TargetPort string // Which port the edge enters (if specified)
-    SourceSide Side   // Computed attachment side
-    TargetSide Side   // Computed attachment side
+type PortLayout struct {
+    ID     string
+    Side   Side
+    Offset float64
+}
+
+type NodeLayout struct {
+    Position
+    Width  float64
+    Height float64
+    Ports  map[string]PortLayout // Non-nil for nodes with computed ports
 }
 ```
 
-Consumers receive fully-resolved positions — no client-side inference needed.
+### Edge Routing with Ports
+
+When an edge specifies ports, routing uses the port's absolute position on the node border:
+
+```go
+// Right side: (node.x + node.width, node.y + offset)
+// Left side:  (node.x, node.y + offset)
+// Bottom:     (node.x + offset, node.y + node.height)
+// Top:        (node.x + offset, node.y)
+```
+
+Without ports, edges fall back to boundary intersection.
+
+### Schema Diagram Pattern
+
+The primary use case for `PortFixedOffset` is schema diagrams where table nodes have field rows at fixed Y positions:
+
+```go
+g.AddNode("users", posit.NodeOptions{
+    Width: 200, Height: 100,
+    Ports: []posit.PortOptions{
+        {ID: "fk-orders", Offset: 34, Constraint: posit.PortFixedOffset, Axis: posit.PortAxisHorizontal},
+        {ID: "fk-profiles", Offset: 54, Constraint: posit.PortFixedOffset, Axis: posit.PortAxisHorizontal},
+    },
+})
+```
+
+Each port stays at its declared Y offset (matching the CSS row height) while Posit selects Left or Right based on where the connected node is positioned.
 
 ---
 
-## 3. Edge Attachment Side Inference
-
-**Priority:** Medium
-**Effort:** Low
+## 3. Edge Attachment Side Inference ✅
 
 ### Concept
 
@@ -223,11 +239,7 @@ When ports are specified, the port's `Side` field takes precedence over inferred
 
 ---
 
-## 4. Orthogonal Edge Routing
-
-**Priority:** High
-**Effort:** Medium-High
-**Depends on:** Port Support (for full value)
+## 4. Orthogonal Edge Routing ✅
 
 ### Concept
 
@@ -281,10 +293,7 @@ The channel assignment is the key server-side advantage — it requires seeing a
 
 ---
 
-## 5. Multi-Edge Support
-
-**Priority:** Medium
-**Effort:** Low-Medium
+## 5. Multi-Edge Support ✅
 
 ### Concept
 
@@ -324,10 +333,7 @@ Edge keys become `"from->to:id"` when ID is specified, otherwise `"from->to"` (b
 
 ---
 
-## 6. Ordering Constraints
-
-**Priority:** Medium
-**Effort:** Low
+## 6. Ordering Constraints ✅
 
 ### Concept
 
@@ -364,11 +370,7 @@ func (s *layoutState) orderLayerWithConstraints(layer []string) {
 
 ---
 
-## 7. Port-Level Crossing Minimization
-
-**Priority:** Medium
-**Effort:** Medium
-**Depends on:** Port Support
+## 7. Port-Level Crossing Minimization ✅
 
 ### Concept
 
@@ -393,10 +395,7 @@ func (s *layoutState) minimizePortCrossings() {
 
 ---
 
-## 8. Edge Weight in Public API
-
-**Priority:** Low
-**Effort:** Low
+## 8. Edge Weight in Public API ✅
 
 ### Concept
 
@@ -421,10 +420,7 @@ type EdgeOptions struct {
 
 ---
 
-## 9. Disconnected Component Packing
-
-**Priority:** Low
-**Effort:** Low
+## 9. Disconnected Component Packing ✅
 
 ### Concept
 
@@ -449,10 +445,7 @@ type Options struct {
 
 ---
 
-## 10. Incremental Layout
-
-**Priority:** Medium
-**Effort:** High
+## 10. Incremental Layout ✅
 
 ### Concept
 
@@ -481,10 +474,7 @@ The simple version preserves layer assignment and X positions, only adjusting Y 
 
 ---
 
-## 11. Compound Graphs (Clusters)
-
-**Priority:** Low
-**Effort:** Very High
+## 11. Compound Graphs (Clusters) ✅
 
 ### Concept
 
@@ -514,26 +504,20 @@ This requires changes to every phase of the algorithm — cycle removal, ranking
 
 ---
 
-## Implementation Order
+## Implementation Summary
 
-| Priority | Improvement | Effort | Leverages | Dependencies |
-|----------|-------------|--------|-----------|--------------|
-| 1 | Rank constraints | Low | Topology | None |
-| 2 | Port support | Medium | Node dimensions | None |
-| 3 | Side inference | Low | All node positions | None (enhanced by ports) |
-| 4 | Edge weight API | Low | Topology | None |
-| 5 | Orthogonal routing | Medium-High | All nodes + all edges | Ports (for full value) |
-| 6 | Multi-edge support | Low-Medium | All edges (parallel detection) | None |
-| 7 | Ordering constraints | Low | Layer structure | None |
-| 8 | Port crossing minimization | Medium | All edges + port positions | Ports |
-| 9 | Disconnected component packing | Low | All components | None |
-| 10 | Incremental layout | High | Previous layout + changes | None |
-| 11 | Compound graphs | Very High | Full topology + grouping | Architecture change |
+All planned improvements have been implemented:
 
-**Leverages column:** What global knowledge each feature uses that a per-edge client renderer cannot access.
-
-**First tier (high value, low effort):** Rank constraints, side inference, edge weight API, ordering constraints. Small additions to existing phases.
-
-**Second tier (high value, medium effort):** Port support, multi-edge, orthogonal routing. New capabilities in Phase 6 (edge routing). Orthogonal routing is the highest-leverage server-side feature — it requires seeing all nodes and all edges simultaneously.
-
-**Third tier (deferred):** Incremental layout and compound graphs require significant architectural additions.
+| # | Feature | Status | Key Files |
+|---|---------|--------|-----------|
+| 1 | Rank constraints | ✅ | `rank.go` |
+| 2 | Port support (5 constraint modes) | ✅ | `port.go`, `posit.go` |
+| 3 | Side inference | ✅ | `route.go` |
+| 4 | Orthogonal routing | ✅ | `route.go` |
+| 5 | Multi-edge support | ✅ | `route.go` |
+| 6 | Ordering constraints | ✅ | `order.go` |
+| 7 | Port crossing minimization | ✅ | `order.go` |
+| 8 | Edge weight API | ✅ | `posit.go` |
+| 9 | Disconnected component packing | ✅ | `posit.go` |
+| 10 | Incremental layout | ✅ | `posit.go` |
+| 11 | Compound graphs (clusters) | ✅ | `posit.go` |

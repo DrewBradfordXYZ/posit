@@ -726,12 +726,19 @@ Posit is informed by **dagre**, the JavaScript graph layout library. Key referen
 | `position/index.js` | `position.go` | Coordinate assignment |
 | `position/bk.js` | `position.go` | Brandes-Kopf algorithm |
 
-Posit intentionally simplifies dagre's implementation by:
+Posit extends beyond dagre's feature set with:
 
-- Removing compound graph support (subgraphs)
-- Removing edge label positioning
-- Removing self-edge handling (treated as no-ops)
-- Using simpler data structures (maps vs graphlib)
+- Compound graph support (nested clusters)
+- Edge label positioning (left/center/right)
+- Self-loop rendering (curved paths)
+- Port constraints (5 modes: FixedPos, FixedSide, FixedOrder, Free, FixedOffset)
+- Orthogonal edge routing
+- Multi-edge support
+- Incremental layout
+- Rank and order constraints
+- Disconnected component packing
+
+While using simpler data structures (maps vs graphlib).
 
 ---
 
@@ -739,11 +746,7 @@ Posit intentionally simplifies dagre's implementation by:
 
 ### Potential Enhancements
 
-1. **Edge labels**: Support for labeling edges at midpoints
-2. **Clustering**: Group related nodes visually
-3. **Incremental layout**: Update layout when graph changes
-4. **Spline routing**: Curved edges instead of polylines
-5. **Port constraints**: Control which side of a node edges connect
+1. **Spline routing**: Curved edges instead of polylines (consumers currently post-process polyline points)
 
 ### Non-Goals
 
@@ -751,6 +754,7 @@ Posit intentionally simplifies dagre's implementation by:
 - 3D layout
 - Interactive/animated layout
 - Graph editing or manipulation beyond layout
+- Spline/bézier curve generation (consumers handle this with their rendering library)
 
 ---
 

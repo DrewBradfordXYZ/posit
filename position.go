@@ -3,6 +3,7 @@ package posit
 import (
 	"math"
 	"sort"
+	"sync"
 )
 
 // maxBlockIterations is a safeguard against infinite loops in placeBlock.
@@ -118,41 +119,50 @@ func (s *layoutState) assignXCoordinatesBK() {
 		return
 	}
 
-	// Find type-1 conflicts
+	// Find type-1 conflicts (shared across all 4 passes)
 	conflicts := s.findType1Conflicts()
 
-	// Compute four alignments
-	xss := make(map[string]map[string]float64)
+	// Precompute layerings for each direction
+	forwardLayers := s.layers
+	reversedLayers := s.reverseLayers()
 
-	for _, vert := range []string{"u", "d"} {
-		layering := s.layers
-		if vert == "d" {
-			layering = s.reverseLayers()
-		}
+	// Define the 4 alignment pass configurations
+	type bkPass struct {
+		key      string
+		layering [][]string
+		horiz    string
+		neighbor func(string) []string
+	}
+	passes := [4]bkPass{
+		{"ul", forwardLayers, "l", s.getPredecessors},
+		{"ur", s.reverseLayerOrders(forwardLayers), "r", s.getPredecessors},
+		{"dl", reversedLayers, "l", s.getSuccessors},
+		{"dr", s.reverseLayerOrders(reversedLayers), "r", s.getSuccessors},
+	}
 
-		for _, horiz := range []string{"l", "r"} {
-			adjustedLayering := layering
-			if horiz == "r" {
-				adjustedLayering = s.reverseLayerOrders(layering)
-			}
-
-			neighborFn := s.getPredecessors
-			if vert == "d" {
-				neighborFn = s.getSuccessors
-			}
-
-			root, align := s.verticalAlignment(adjustedLayering, conflicts, neighborFn)
-			xs := s.horizontalCompaction(adjustedLayering, root, align)
-
-			if horiz == "r" {
-				// Negate X values
+	// Run all 4 alignment passes in parallel
+	var results [4]map[string]float64
+	var wg sync.WaitGroup
+	wg.Add(4)
+	for i := range passes {
+		go func(idx int) {
+			defer wg.Done()
+			p := passes[idx]
+			root, align := s.verticalAlignment(p.layering, conflicts, p.neighbor)
+			xs := s.horizontalCompaction(p.layering, root, align)
+			if p.horiz == "r" {
 				for id := range xs {
 					xs[id] = -xs[id]
 				}
 			}
+			results[idx] = xs
+		}(i)
+	}
+	wg.Wait()
 
-			xss[vert+horiz] = xs
-		}
+	xss := make(map[string]map[string]float64, 4)
+	for i, p := range passes {
+		xss[p.key] = results[i]
 	}
 
 	// Align to smallest width

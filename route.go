@@ -2,7 +2,9 @@ package posit
 
 import (
 	"math"
+	"runtime"
 	"sort"
+	"sync"
 )
 
 // maxDummyChainIterations is a safeguard against infinite loops when
@@ -43,85 +45,149 @@ func (s *layoutState) routeEdges() {
 	s.restoreSelfLoops()
 }
 
+// chainPathResult holds the computed path for one dummy chain.
+type chainPathResult struct {
+	sourceID   string
+	targetID   string
+	edge       *layoutEdge
+	points     []EdgePoint
+	labelX     float64
+	labelY     float64
+	hasLabel   bool
+	dummyEdges []edgeKey
+}
+
 // buildEdgePaths walks dummy chains to create edge bend points.
 // It also restores the original edges that were split and removes dummy edges.
+// For graphs with many chains (≥50), path building runs in parallel.
 func (s *layoutState) buildEdgePaths() {
-	// Collect dummy edges to remove
-	dummyEdges := make([]edgeKey, 0)
-
+	// Filter valid chains
+	validChains := make([]string, 0, len(s.dummyChains))
 	for _, firstDummy := range s.dummyChains {
 		dummy := s.nodes[firstDummy]
-		if dummy == nil || dummy.edgeLabel == nil {
-			continue
+		if dummy != nil && dummy.edgeLabel != nil && len(s.predecessors[firstDummy]) > 0 {
+			validChains = append(validChains, firstDummy)
 		}
-
-		edge := dummy.edgeLabel
-		edge.points = make([]EdgePoint, 0)
-
-		// Find the source node (predecessor of first dummy)
-		preds := s.predecessors[firstDummy]
-		if len(preds) == 0 {
-			continue
-		}
-		sourceID := preds[0]
-
-		// Mark edge from source to first dummy for removal
-		dummyEdges = append(dummyEdges, edgeKey{from: sourceID, to: firstDummy})
-
-		// Walk the chain
-		current := firstDummy
-		var targetID string
-		iterations := 0
-		for {
-			if iterations >= maxDummyChainIterations {
-				break // Prevent infinite loop from corrupted chain structure
-			}
-			iterations++
-
-			node := s.nodes[current]
-			if node == nil || !node.isDummy {
-				// Current is the target node (not a dummy)
-				targetID = current
-				break
-			}
-
-			// Check if this is the label dummy - extract its position
-			if edge.labelDummyID == current {
-				edge.labelX = node.x + node.width/2
-				edge.labelY = node.y + node.height/2
-			}
-
-			// Add dummy's position as bend point
-			// Use center of node (even though dummies have 0 size)
-			edge.points = append(edge.points, EdgePoint{
-				X: node.x + node.width/2,
-				Y: node.y + node.height/2,
-			})
-
-			// Move to next in chain
-			successors := s.successors[current]
-			if len(successors) == 0 {
-				break
-			}
-			nextNode := successors[0]
-
-			// Mark edge from current dummy to next for removal
-			dummyEdges = append(dummyEdges, edgeKey{from: current, to: nextNode})
-
-			current = nextNode
-		}
-
-		// Restore the original edge to s.edges
-		// The edge's key should be source -> target
-		originalKey := edgeKey{from: sourceID, to: targetID}
-		edge.key = originalKey
-		s.edges[originalKey] = edge
 	}
 
-	// Remove dummy edges from s.edges
-	for _, key := range dummyEdges {
-		delete(s.edges, key)
+	if len(validChains) == 0 {
+		return
 	}
+
+	// Build paths — parallel for large graphs, sequential for small ones
+	var results []chainPathResult
+	if len(validChains) >= 50 {
+		results = s.buildChainPathsParallel(validChains)
+	} else {
+		results = s.buildChainPathsSequential(validChains)
+	}
+
+	// Apply results to edge map (sequential — shared map mutations)
+	for i := range results {
+		r := &results[i]
+		originalKey := edgeKey{from: r.sourceID, to: r.targetID}
+		r.edge.key = originalKey
+		r.edge.points = r.points
+		if r.hasLabel {
+			r.edge.labelX = r.labelX
+			r.edge.labelY = r.labelY
+		}
+		s.edges[originalKey] = r.edge
+
+		for _, dk := range r.dummyEdges {
+			delete(s.edges, dk)
+		}
+	}
+}
+
+// buildChainPathsSequential builds paths for all chains sequentially.
+func (s *layoutState) buildChainPathsSequential(chains []string) []chainPathResult {
+	results := make([]chainPathResult, len(chains))
+	for i, firstDummy := range chains {
+		results[i] = s.buildChainPath(firstDummy)
+	}
+	return results
+}
+
+// buildChainPathsParallel builds paths using a fixed number of worker goroutines.
+// Uses runtime.NumCPU() workers to avoid spawning thousands of goroutines for
+// graphs with many short chains (where per-goroutine overhead would dominate).
+func (s *layoutState) buildChainPathsParallel(chains []string) []chainPathResult {
+	results := make([]chainPathResult, len(chains))
+	workers := runtime.NumCPU()
+	if workers > len(chains) {
+		workers = len(chains)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	chunkSize := (len(chains) + workers - 1) / workers
+
+	for w := 0; w < workers; w++ {
+		start := w * chunkSize
+		end := start + chunkSize
+		if end > len(chains) {
+			end = len(chains)
+		}
+		go func(from, to int) {
+			defer wg.Done()
+			for i := from; i < to; i++ {
+				results[i] = s.buildChainPath(chains[i])
+			}
+		}(start, end)
+	}
+	wg.Wait()
+	return results
+}
+
+// buildChainPath walks a single dummy chain to compute its path points.
+// Reads only from s.nodes, s.predecessors, s.successors (all read-only during routing).
+func (s *layoutState) buildChainPath(firstDummy string) chainPathResult {
+	edge := s.nodes[firstDummy].edgeLabel
+	sourceID := s.predecessors[firstDummy][0]
+
+	result := chainPathResult{
+		sourceID:   sourceID,
+		edge:       edge,
+		points:     make([]EdgePoint, 0),
+		dummyEdges: []edgeKey{{from: sourceID, to: firstDummy}},
+	}
+
+	current := firstDummy
+	iterations := 0
+	for {
+		if iterations >= maxDummyChainIterations {
+			break
+		}
+		iterations++
+
+		node := s.nodes[current]
+		if node == nil || !node.isDummy {
+			result.targetID = current
+			break
+		}
+
+		if edge.labelDummyID == current {
+			result.labelX = node.x + node.width/2
+			result.labelY = node.y + node.height/2
+			result.hasLabel = true
+		}
+
+		result.points = append(result.points, EdgePoint{
+			X: node.x + node.width/2,
+			Y: node.y + node.height/2,
+		})
+
+		successors := s.successors[current]
+		if len(successors) == 0 {
+			break
+		}
+		nextNode := successors[0]
+		result.dummyEdges = append(result.dummyEdges, edgeKey{from: current, to: nextNode})
+		current = nextNode
+	}
+
+	return result
 }
 
 // initializeShortEdges ensures edges without dummies have points arrays
@@ -735,7 +801,7 @@ func (s *layoutState) findClearVerticalChannel(
 	bestDist := math.Inf(1)
 
 	// Collect all X boundaries of obstacles in the Y range
-	var boundaries []float64
+	boundaries := make([]float64, 0, 2*len(obstacles)+1)
 	for _, obs := range obstacles {
 		if obs.id == fromNode.id || obs.id == toNode.id {
 			continue

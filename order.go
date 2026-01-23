@@ -612,7 +612,7 @@ func (s *layoutState) calculateBarycenter(nodeID string, neighborFn func(string)
 		position float64
 		weight   float64
 	}
-	var positions []weightedPos
+	positions := make([]weightedPos, 0, len(neighbors))
 	totalWeight := 0.0
 
 	for _, neighborID := range neighbors {
@@ -693,7 +693,7 @@ func (s *layoutState) twoLayerCrossCount(northLayer, southLayer []string) float6
 		pos    int
 		weight float64
 	}
-	var southEntries []entry
+	southEntries := make([]entry, 0, len(northLayer)*2)
 
 	for _, v := range northLayer {
 		var edges []entry
@@ -722,7 +722,7 @@ func (s *layoutState) twoLayerCrossCount(northLayer, southLayer []string) float6
 		return 0.0
 	}
 
-	// Build accumulator tree
+	// Build accumulator tree, reusing s.treeBuf to avoid repeated allocations
 	n := len(southLayer)
 	firstIndex := 1
 	for firstIndex < n {
@@ -730,21 +730,27 @@ func (s *layoutState) twoLayerCrossCount(northLayer, southLayer []string) float6
 	}
 	treeSize := 2*firstIndex - 1
 	firstIndex--
-	tree := make([]float64, treeSize)
+
+	if cap(s.treeBuf) < treeSize {
+		s.treeBuf = make([]float64, treeSize)
+	} else {
+		s.treeBuf = s.treeBuf[:treeSize]
+		clear(s.treeBuf)
+	}
 
 	// Count crossings using the accumulator tree
 	cc := 0.0
 	for _, e := range southEntries {
 		index := e.pos + firstIndex
-		tree[index] += e.weight
+		s.treeBuf[index] += e.weight
 
 		weightSum := 0.0
 		for index > 0 {
 			if index%2 == 1 { // Left child
-				weightSum += tree[index+1] // Add right sibling
+				weightSum += s.treeBuf[index+1] // Add right sibling
 			}
 			index = (index - 1) >> 1
-			tree[index] += e.weight
+			s.treeBuf[index] += e.weight
 		}
 		cc += e.weight * weightSum
 	}

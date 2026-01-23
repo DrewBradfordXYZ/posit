@@ -104,6 +104,10 @@ type layoutState struct {
 
 	// Deterministic RNG for stochastic disturbance in adjacent exchange
 	rng *rand.Rand
+
+	// Reusable buffer for accumulator tree in twoLayerCrossCount.
+	// Avoids repeated allocation in the hot crossing-count loop.
+	treeBuf []float64
 }
 
 // newLayoutState initializes internal state from a Graph.

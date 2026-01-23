@@ -513,6 +513,26 @@ func (s *layoutState) separation(leftID, rightID string) float64 {
 		sep = s.opts.NodeSep / 2
 	}
 
+	// Add cluster padding when nodes are at a cluster boundary
+	// (one inside a cluster, one outside or in a different cluster)
+	if len(s.clusters) > 0 {
+		leftParent := s.parents[leftID]
+		rightParent := s.parents[rightID]
+		if leftParent != rightParent {
+			// Add padding from the cluster boundary
+			if leftParent != "" {
+				if padding, ok := s.clusters[leftParent]; ok {
+					sep += padding
+				}
+			}
+			if rightParent != "" {
+				if padding, ok := s.clusters[rightParent]; ok {
+					sep += padding
+				}
+			}
+		}
+	}
+
 	return left.width/2 + sep + right.width/2
 }
 

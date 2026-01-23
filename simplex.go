@@ -103,8 +103,12 @@ func (s *layoutState) slack(key edgeKey) int {
 	fromRank := s.nodes[key.from].rank
 	toRank := s.nodes[key.to].rank
 	minlen := 1
-	if edge := s.edges[key]; edge != nil && edge.minlen > 0 {
-		minlen = edge.minlen
+	if edge := s.edges[key]; edge != nil {
+		if edge.minlen > 0 {
+			minlen = edge.minlen
+		} else if edge.minlen == 0 {
+			minlen = 0 // explicitly set to 0 (e.g., rank group constraints)
+		}
 	}
 	return toRank - fromRank - minlen
 }
@@ -535,9 +539,10 @@ func (s *layoutState) validateRanks() bool {
 		fromRank := s.nodes[key.from].rank
 		toRank := s.nodes[key.to].rank
 		minlen := edge.minlen
-		if minlen <= 0 {
+		if minlen < 0 {
 			minlen = 1
 		}
+		// minlen=0 is valid (e.g., rank group constraints)
 		if toRank-fromRank < minlen {
 			return false
 		}

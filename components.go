@@ -94,11 +94,13 @@ func (s *layoutState) packComponents() {
 }
 
 // findComponents identifies disconnected components using BFS.
+// Traverses through dummy nodes to find connected real nodes, but does not
+// include dummy nodes in the returned components.
 func (s *layoutState) findComponents() [][]string {
 	visited := make(map[string]bool, len(s.nodes))
 	var components [][]string
 
-	// Get sorted node IDs for deterministic ordering
+	// Get sorted non-dummy node IDs for deterministic ordering
 	nodeIDs := make([]string, 0, len(s.nodes))
 	for id := range s.nodes {
 		if !s.nodes[id].isDummy {
@@ -112,7 +114,7 @@ func (s *layoutState) findComponents() [][]string {
 			continue
 		}
 
-		// BFS from this node
+		// BFS from this node — traverse through dummies but only collect real nodes
 		var component []string
 		queue := []string{startID}
 		visited[startID] = true
@@ -120,19 +122,23 @@ func (s *layoutState) findComponents() [][]string {
 		for len(queue) > 0 {
 			id := queue[0]
 			queue = queue[1:]
-			component = append(component, id)
 
-			// Visit successors
+			// Only add non-dummy nodes to the component
+			if !s.nodes[id].isDummy {
+				component = append(component, id)
+			}
+
+			// Visit all successors (including dummies) for traversal
 			for _, succ := range s.successors[id] {
-				if !visited[succ] && !s.nodes[succ].isDummy {
+				if !visited[succ] {
 					visited[succ] = true
 					queue = append(queue, succ)
 				}
 			}
 
-			// Visit predecessors
+			// Visit all predecessors (including dummies) for traversal
 			for _, pred := range s.predecessors[id] {
-				if !visited[pred] && !s.nodes[pred].isDummy {
+				if !visited[pred] {
 					visited[pred] = true
 					queue = append(queue, pred)
 				}

@@ -36,7 +36,10 @@ func (s *layoutState) routeEdges() {
 	// Step 6: Infer attachment sides for all edges
 	s.inferEdgeSides()
 
-	// Step 7: Restore self-loops with curved paths
+	// Step 7: Resolve label collisions
+	s.resolveEdgeLabelCollisions()
+
+	// Step 8: Restore self-loops with curved paths
 	s.restoreSelfLoops()
 }
 
@@ -242,22 +245,57 @@ func (s *layoutState) getIntersectionEnd(fromNode, toNode *layoutNode, edge *lay
 }
 
 // getPortPosition resolves a port ID to an absolute position on a node.
+// Port sides are specified in user coordinate space and transformed to internal
+// layout space based on the current direction.
+// When port Width/Height are specified, returns the center of the port's
+// attachment area on the node boundary.
 func (s *layoutState) getPortPosition(node *layoutNode, portID string) (EdgePoint, bool) {
 	for _, port := range node.ports {
 		if port.ID == portID {
-			switch port.Side {
+			// Transform port side from user space to internal layout space
+			side := s.portSideToInternal(port.Side)
+
+			// Port center offset (accounting for port dimensions)
+			portCenterOffset := port.Offset
+			if port.Width > 0 || port.Height > 0 {
+				// Center the port on its offset
+				switch side {
+				case Right, Left:
+					portCenterOffset = port.Offset + port.Height/2
+				case Top, Bottom:
+					portCenterOffset = port.Offset + port.Width/2
+				}
+			}
+
+			switch side {
 			case Right:
-				return EdgePoint{X: node.x + node.width, Y: node.y + port.Offset}, true
+				return EdgePoint{X: node.x + node.width, Y: node.y + portCenterOffset}, true
 			case Left:
-				return EdgePoint{X: node.x, Y: node.y + port.Offset}, true
+				return EdgePoint{X: node.x, Y: node.y + portCenterOffset}, true
 			case Bottom:
-				return EdgePoint{X: node.x + port.Offset, Y: node.y + node.height}, true
+				return EdgePoint{X: node.x + portCenterOffset, Y: node.y + node.height}, true
 			case Top:
-				return EdgePoint{X: node.x + port.Offset, Y: node.y}, true
+				return EdgePoint{X: node.x + portCenterOffset, Y: node.y}, true
 			}
 		}
 	}
 	return EdgePoint{}, false
+}
+
+// portSideToInternal transforms a port side from user coordinate space to
+// internal layout space. This is the inverse of the side rotation applied
+// in undoDirectionAdjustment.
+func (s *layoutState) portSideToInternal(side Side) Side {
+	switch s.opts.Direction {
+	case LeftToRight:
+		return rotateLR(side)
+	case RightToLeft:
+		return rotateRL(side)
+	case BottomToTop:
+		return flipVertical(side)
+	default:
+		return side
+	}
 }
 
 // intersectRect finds intersection of line from node center to external point.
@@ -362,6 +400,8 @@ func (s *layoutState) getPortSide(node *layoutNode, portID string) (Side, bool) 
 }
 
 // offsetParallelEdges offsets multiple edges between the same node pair.
+// Each edge's entire polyline is offset perpendicular to each segment direction,
+// so parallel edges remain visually separated even around bends.
 func (s *layoutState) offsetParallelEdges() {
 	const parallelEdgeSpacing = 10.0
 
@@ -385,41 +425,72 @@ func (s *layoutState) offsetParallelEdges() {
 			return edges[i].id < edges[j].id
 		})
 
-		fromNode := s.nodes[edges[0].key.from]
-		toNode := s.nodes[edges[0].key.to]
-		if fromNode == nil || toNode == nil {
-			continue
-		}
-
-		// Compute perpendicular direction
-		dx := (toNode.x + toNode.width/2) - (fromNode.x + fromNode.width/2)
-		dy := (toNode.y + toNode.height/2) - (fromNode.y + fromNode.height/2)
-		length := math.Sqrt(dx*dx + dy*dy)
-		if length == 0 {
-			continue
-		}
-
-		// Perpendicular unit vector
-		px := -dy / length
-		py := dx / length
-
 		for i, edge := range edges {
 			offset := (float64(i) - float64(n-1)/2) * parallelEdgeSpacing
 			if offset == 0 {
 				continue
 			}
-			// Offset all points perpendicular to the edge direction
-			for j := range edge.points {
-				edge.points[j].X += px * offset
-				edge.points[j].Y += py * offset
+
+			pts := edge.points
+			if len(pts) < 2 {
+				continue
 			}
+
+			// Offset each point based on the perpendicular of its adjacent segments
+			newPts := make([]EdgePoint, len(pts))
+			for j := range pts {
+				// Compute average direction at this point from adjacent segments
+				var dx, dy float64
+				if j == 0 {
+					// First point: use direction of first segment
+					dx = pts[1].X - pts[0].X
+					dy = pts[1].Y - pts[0].Y
+				} else if j == len(pts)-1 {
+					// Last point: use direction of last segment
+					dx = pts[j].X - pts[j-1].X
+					dy = pts[j].Y - pts[j-1].Y
+				} else {
+					// Middle point: average of incoming and outgoing segments
+					dx = pts[j+1].X - pts[j-1].X
+					dy = pts[j+1].Y - pts[j-1].Y
+				}
+
+				length := math.Sqrt(dx*dx + dy*dy)
+				if length == 0 {
+					newPts[j] = pts[j]
+					continue
+				}
+
+				// Perpendicular unit vector
+				px := -dy / length
+				py := dx / length
+
+				newPts[j] = EdgePoint{
+					X: pts[j].X + px*offset,
+					Y: pts[j].Y + py*offset,
+				}
+			}
+			edge.points = newPts
 		}
 	}
 }
 
+// orthoRect represents a node bounding box for obstacle avoidance.
+type orthoRect struct {
+	x, y, w, h float64
+	id          string
+}
+
+// orthoSegKey identifies a channel segment for spacing.
+type orthoSegKey struct {
+	axis     byte // 'h' for horizontal, 'v' for vertical
+	position int  // quantized primary coordinate
+}
+
 // routeOrthogonal implements channel-based orthogonal edge routing.
 // Edges are routed using horizontal and vertical segments through channels
-// between node columns and layers.
+// between node columns and layers. It avoids routing through nodes and
+// spaces parallel edges in shared channels.
 func (s *layoutState) routeOrthogonal() {
 	channelGap := s.opts.ChannelGap
 	if channelGap <= 0 {
@@ -447,8 +518,24 @@ func (s *layoutState) routeOrthogonal() {
 		return edgesToRoute[i].key.id < edgesToRoute[j].key.id
 	})
 
-	// Track channel usage for spacing: map from X corridor to count of edges using it
-	channelUsage := make(map[int]int)
+	// Build node bounding boxes for obstacle avoidance (exclude edge endpoints)
+	var obstacles []orthoRect
+	for id, node := range s.nodes {
+		if node.isDummy {
+			continue
+		}
+		obstacles = append(obstacles, orthoRect{node.x, node.y, node.width, node.height, id})
+	}
+
+	// Add cluster bounding boxes as obstacles
+	clusterObstacles := s.computeClusterObstacles()
+	obstacles = append(obstacles, clusterObstacles...)
+
+	// Compute horizontal channel Y positions (midpoints between layers)
+	layerYs := s.computeLayerChannelYs()
+
+	// Track channel segment usage for edge spacing
+	channelUsage := make(map[orthoSegKey]int)
 
 	for _, entry := range edgesToRoute {
 		edge := entry.edge
@@ -458,7 +545,7 @@ func (s *layoutState) routeOrthogonal() {
 			continue
 		}
 
-		// Determine start and end points (port or center)
+		// Determine start and end points (port or node center-bottom/center-top)
 		var startPt, endPt EdgePoint
 		if edge.sourcePort != "" {
 			if pt, ok := s.getPortPosition(fromNode, edge.sourcePort); ok {
@@ -480,44 +567,394 @@ func (s *layoutState) routeOrthogonal() {
 			endPt = EdgePoint{X: toNode.x + toNode.width/2, Y: toNode.y}
 		}
 
-		// Simple orthogonal routing: exit bottom, go to a horizontal channel,
-		// then vertical channel, then horizontal to target top.
+		// Route the edge through waypoints with node avoidance
+		var waypoints []EdgePoint
 		if len(edge.points) > 0 {
-			// Edge already has waypoints from dummy nodes.
-			// Convert to orthogonal segments.
-			orthoPoints := make([]EdgePoint, 0, len(edge.points)*2+2)
-			orthoPoints = append(orthoPoints, startPt)
+			waypoints = edge.points
+		}
 
-			prevPt := startPt
-			for _, pt := range edge.points {
-				// Add horizontal then vertical segment
-				midY := (prevPt.Y + pt.Y) / 2
-				channelIdx := int(midY / channelGap)
-				usage := channelUsage[channelIdx]
-				channelUsage[channelIdx]++
-				offset := float64(usage) * channelGap
+		orthoPoints := s.buildOrthogonalPath(startPt, endPt, waypoints, fromNode, toNode, obstacles, layerYs, channelGap, channelUsage)
+		edge.points = orthoPoints
+	}
+}
 
-				orthoPoints = append(orthoPoints, EdgePoint{X: prevPt.X, Y: midY + offset})
-				orthoPoints = append(orthoPoints, EdgePoint{X: pt.X, Y: midY + offset})
-				prevPt = pt
+// computeLayerChannelYs returns Y coordinates of horizontal routing channels
+// (the midpoints between each pair of adjacent layers).
+func (s *layoutState) computeLayerChannelYs() []float64 {
+	if len(s.layers) <= 1 {
+		return nil
+	}
+
+	channels := make([]float64, len(s.layers)-1)
+	for i := 0; i < len(s.layers)-1; i++ {
+		// Find bottom of upper layer
+		upperBottom := 0.0
+		for _, id := range s.layers[i] {
+			node := s.nodes[id]
+			if bottom := node.y + node.height; bottom > upperBottom {
+				upperBottom = bottom
 			}
+		}
+		// Find top of lower layer
+		lowerTop := math.Inf(1)
+		for _, id := range s.layers[i+1] {
+			node := s.nodes[id]
+			if node.y < lowerTop {
+				lowerTop = node.y
+			}
+		}
+		channels[i] = (upperBottom + lowerTop) / 2
+	}
+	return channels
+}
 
-			// Final segment to target
-			midY := (prevPt.Y + endPt.Y) / 2
-			orthoPoints = append(orthoPoints, EdgePoint{X: prevPt.X, Y: midY})
-			orthoPoints = append(orthoPoints, EdgePoint{X: endPt.X, Y: midY})
-			orthoPoints = append(orthoPoints, endPt)
+// buildOrthogonalPath creates an orthogonal path from start to end,
+// routing through waypoints while avoiding obstacle nodes.
+func (s *layoutState) buildOrthogonalPath(
+	start, end EdgePoint,
+	waypoints []EdgePoint,
+	fromNode, toNode *layoutNode,
+	obstacles []orthoRect,
+	layerYs []float64,
+	channelGap float64,
+	channelUsage map[orthoSegKey]int,
+) []EdgePoint {
 
-			edge.points = orthoPoints
-		} else {
-			// Simple one-layer edge: route with one bend
-			midY := (startPt.Y + endPt.Y) / 2
+	// Build sequence of points to connect: start → waypoints → end
+	allPts := make([]EdgePoint, 0, len(waypoints)+2)
+	allPts = append(allPts, start)
+	allPts = append(allPts, waypoints...)
+	allPts = append(allPts, end)
 
-			edge.points = []EdgePoint{
-				startPt,
-				{X: startPt.X, Y: midY},
-				{X: endPt.X, Y: midY},
-				endPt,
+	result := make([]EdgePoint, 0, len(allPts)*3)
+	result = append(result, start)
+
+	for i := 1; i < len(allPts); i++ {
+		prev := allPts[i-1]
+		next := allPts[i]
+
+		if prev.X == next.X && prev.Y == next.Y {
+			continue
+		}
+
+		// Find the horizontal channel Y for this segment
+		channelY := (prev.Y + next.Y) / 2
+		// Find nearest layer channel if available
+		if len(layerYs) > 0 {
+			bestDist := math.Inf(1)
+			for _, ly := range layerYs {
+				if ly > prev.Y && ly < next.Y {
+					dist := math.Abs(ly - channelY)
+					if dist < bestDist {
+						bestDist = dist
+						channelY = ly
+					}
+				}
+			}
+		}
+
+		// Apply channel spacing offset
+		sk := orthoSegKey{axis: 'h', position: int(channelY / channelGap)}
+		usage := channelUsage[sk]
+		channelUsage[sk]++
+		channelY += float64(usage) * channelGap
+
+		// Determine the X channel for the vertical segment
+		channelX := next.X
+		if prev.X != next.X {
+			// Check if vertical path at channelX intersects any obstacle
+			channelX = s.findClearVerticalChannel(prev.X, next.X, channelY, next.Y, fromNode, toNode, obstacles, channelGap, channelUsage)
+		}
+
+		// Route: vertical from prev to channelY, horizontal to channelX, vertical to next
+		if prev.Y != channelY {
+			result = append(result, EdgePoint{X: prev.X, Y: channelY})
+		}
+		if prev.X != channelX {
+			result = append(result, EdgePoint{X: channelX, Y: channelY})
+		}
+		if channelY != next.Y && channelX != next.X {
+			result = append(result, EdgePoint{X: channelX, Y: next.Y})
+		}
+	}
+
+	// Deduplicate consecutive identical points
+	if len(result) == 0 || result[len(result)-1] != end {
+		result = append(result, end)
+	}
+
+	return s.deduplicatePoints(result)
+}
+
+// findClearVerticalChannel finds a vertical X position that avoids obstacles
+// between the horizontal channel and the target Y.
+func (s *layoutState) findClearVerticalChannel(
+	fromX, toX, fromY, toY float64,
+	fromNode, toNode *layoutNode,
+	obstacles []orthoRect,
+	channelGap float64,
+	channelUsage map[orthoSegKey]int,
+) float64 {
+	// Preferred X is the target X (shortest path)
+	preferredX := toX
+
+	// Check if preferred X intersects any obstacle in the Y range
+	minY := math.Min(fromY, toY)
+	maxY := math.Max(fromY, toY)
+
+	clear := true
+	for _, obs := range obstacles {
+		// Skip source and target nodes
+		if obs.id == fromNode.id || obs.id == toNode.id {
+			continue
+		}
+		// Skip clusters that contain either endpoint
+		if s.isNodeInCluster(fromNode.id, obs.id) || s.isNodeInCluster(toNode.id, obs.id) {
+			continue
+		}
+		// Check if obstacle overlaps with the vertical line at preferredX
+		if preferredX >= obs.x && preferredX <= obs.x+obs.w {
+			// Check Y overlap
+			if obs.y < maxY && obs.y+obs.h > minY {
+				clear = false
+				break
+			}
+		}
+	}
+
+	if clear {
+		// Apply vertical channel spacing
+		sk := orthoSegKey{axis: 'v', position: int(preferredX / channelGap)}
+		usage := channelUsage[sk]
+		channelUsage[sk]++
+		return preferredX + float64(usage)*channelGap
+	}
+
+	// Find a clear channel: try positions to the left and right of the obstacle
+	bestX := preferredX
+	bestDist := math.Inf(1)
+
+	// Collect all X boundaries of obstacles in the Y range
+	var boundaries []float64
+	for _, obs := range obstacles {
+		if obs.id == fromNode.id || obs.id == toNode.id {
+			continue
+		}
+		if s.isNodeInCluster(fromNode.id, obs.id) || s.isNodeInCluster(toNode.id, obs.id) {
+			continue
+		}
+		if obs.y < maxY && obs.y+obs.h > minY {
+			boundaries = append(boundaries, obs.x-channelGap)
+			boundaries = append(boundaries, obs.x+obs.w+channelGap)
+		}
+	}
+	// Also consider fromX as a candidate
+	boundaries = append(boundaries, fromX)
+
+	for _, candidateX := range boundaries {
+		// Check if this X is clear
+		candidateClear := true
+		for _, obs := range obstacles {
+			if obs.id == fromNode.id || obs.id == toNode.id {
+				continue
+			}
+			if s.isNodeInCluster(fromNode.id, obs.id) || s.isNodeInCluster(toNode.id, obs.id) {
+				continue
+			}
+			if candidateX >= obs.x && candidateX <= obs.x+obs.w {
+				if obs.y < maxY && obs.y+obs.h > minY {
+					candidateClear = false
+					break
+				}
+			}
+		}
+		if candidateClear {
+			dist := math.Abs(candidateX - preferredX)
+			if dist < bestDist {
+				bestDist = dist
+				bestX = candidateX
+			}
+		}
+	}
+
+	sk := orthoSegKey{axis: 'v', position: int(bestX / channelGap)}
+	usage := channelUsage[sk]
+	channelUsage[sk]++
+	return bestX + float64(usage)*channelGap
+}
+
+// computeClusterObstacles returns bounding boxes for cluster nodes.
+// Edges not originating from within a cluster must route around its boundary.
+func (s *layoutState) computeClusterObstacles() []orthoRect {
+	if len(s.clusters) == 0 {
+		return nil
+	}
+
+	var clusterRects []orthoRect
+	for clusterID, padding := range s.clusters {
+		// Find all children of this cluster
+		var children []string
+		for childID, parentID := range s.parents {
+			if parentID == clusterID {
+				children = append(children, childID)
+			}
+		}
+		if len(children) == 0 {
+			continue
+		}
+
+		// Compute bounding box of children
+		minX := math.Inf(1)
+		minY := math.Inf(1)
+		maxX := math.Inf(-1)
+		maxY := math.Inf(-1)
+
+		for _, childID := range children {
+			node := s.nodes[childID]
+			if node == nil {
+				continue
+			}
+			if node.x < minX {
+				minX = node.x
+			}
+			if node.y < minY {
+				minY = node.y
+			}
+			if node.x+node.width > maxX {
+				maxX = node.x + node.width
+			}
+			if node.y+node.height > maxY {
+				maxY = node.y + node.height
+			}
+		}
+
+		if math.IsInf(minX, 1) {
+			continue
+		}
+
+		// Add padding to form cluster boundary
+		clusterRects = append(clusterRects, orthoRect{
+			x:  minX - padding,
+			y:  minY - padding,
+			w:  (maxX - minX) + 2*padding,
+			h:  (maxY - minY) + 2*padding,
+			id: clusterID,
+		})
+	}
+
+	return clusterRects
+}
+
+// isNodeInCluster returns true if the given node is inside the specified cluster.
+func (s *layoutState) isNodeInCluster(nodeID, clusterID string) bool {
+	current := nodeID
+	for {
+		parent, ok := s.parents[current]
+		if !ok || parent == "" {
+			return false
+		}
+		if parent == clusterID {
+			return true
+		}
+		current = parent
+	}
+}
+
+// deduplicatePoints removes consecutive identical points and collinear points.
+func (s *layoutState) deduplicatePoints(points []EdgePoint) []EdgePoint {
+	if len(points) <= 2 {
+		return points
+	}
+
+	result := []EdgePoint{points[0]}
+	for i := 1; i < len(points)-1; i++ {
+		prev := result[len(result)-1]
+		curr := points[i]
+		next := points[i+1]
+
+		// Skip if same as previous
+		if curr.X == prev.X && curr.Y == prev.Y {
+			continue
+		}
+		// Skip if collinear (all on same horizontal or vertical line)
+		if (prev.X == curr.X && curr.X == next.X) ||
+			(prev.Y == curr.Y && curr.Y == next.Y) {
+			continue
+		}
+		result = append(result, curr)
+	}
+	result = append(result, points[len(points)-1])
+	return result
+}
+
+// resolveEdgeLabelCollisions nudges edge labels that overlap with nodes or other labels.
+func (s *layoutState) resolveEdgeLabelCollisions() {
+	// Collect all labels with bounding boxes
+	type labelRect struct {
+		edge *layoutEdge
+		x, y float64
+		w, h float64
+	}
+	var labels []labelRect
+	for _, edge := range s.edges {
+		if edge.labelWidth > 0 || edge.labelHeight > 0 {
+			labels = append(labels, labelRect{
+				edge: edge,
+				x:    edge.labelX - edge.labelWidth/2,
+				y:    edge.labelY - edge.labelHeight/2,
+				w:    edge.labelWidth,
+				h:    edge.labelHeight,
+			})
+		}
+	}
+
+	if len(labels) <= 1 {
+		return
+	}
+
+	// Check label-label overlaps and nudge
+	nudgeStep := s.opts.NodeSep / 4
+	if nudgeStep < 5 {
+		nudgeStep = 5
+	}
+
+	for i := 0; i < len(labels); i++ {
+		for j := i + 1; j < len(labels); j++ {
+			li := labels[i]
+			lj := labels[j]
+
+			// Check overlap
+			if li.x < lj.x+lj.w && li.x+li.w > lj.x &&
+				li.y < lj.y+lj.h && li.y+li.h > lj.y {
+				// Nudge the second label away
+				// Determine nudge direction (perpendicular to edge direction)
+				dy := lj.y - li.y
+				if dy >= 0 {
+					labels[j].y += nudgeStep
+					labels[j].edge.labelY += nudgeStep
+				} else {
+					labels[j].y -= nudgeStep
+					labels[j].edge.labelY -= nudgeStep
+				}
+			}
+		}
+	}
+
+	// Check label-node overlaps
+	for i := range labels {
+		for _, node := range s.nodes {
+			if node.isDummy || node.width == 0 {
+				continue
+			}
+			nx, ny := node.x, node.y
+			nw, nh := node.width, node.height
+
+			li := labels[i]
+			if li.x < nx+nw && li.x+li.w > nx &&
+				li.y < ny+nh && li.y+li.h > ny {
+				// Nudge label below the node
+				labels[i].y = ny + nh + nudgeStep/2
+				labels[i].edge.labelY = labels[i].y + labels[i].h/2
 			}
 		}
 	}

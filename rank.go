@@ -13,8 +13,14 @@ func (s *layoutState) assignLayers() {
 		s.assignLayersLongestPath()
 	}
 
-	// Apply rank constraints after initial assignment
-	s.applyRankConstraints()
+	// Apply RankGroup constraints (post-hoc: move group members to same rank)
+	s.applyRankGroups()
+
+	// Apply RankMin/RankMax constraints
+	s.applyRankMinMax()
+
+	// Constrain cluster children to consecutive ranks
+	s.constrainClusterRanks()
 
 	// Normalize ranks to start at 0
 	s.normalizeRanks()
@@ -23,38 +29,43 @@ func (s *layoutState) assignLayers() {
 	s.buildLayers()
 }
 
-// applyRankConstraints adjusts node ranks based on user-specified constraints.
-// This runs after initial rank assignment and before normalization.
-func (s *layoutState) applyRankConstraints() {
-	if len(s.nodes) == 0 {
-		return
-	}
-
-	// Step 1: Apply RankGroup constraints.
-	// Nodes in the same group get the same rank (maximum rank among group members
-	// to satisfy edge constraints).
+// applyRankGroups moves all members of a RankGroup to the minimum rank
+// among the group members. This is applied post-hoc after ranking so it
+// works regardless of the graph structure (even when group members are
+// connected through paths that would make same-rank infeasible as edge constraints).
+func (s *layoutState) applyRankGroups() {
 	groups := make(map[string][]string)
 	for id, node := range s.nodes {
 		if node.rankGroup != "" && !node.isDummy {
 			groups[node.rankGroup] = append(groups[node.rankGroup], id)
 		}
 	}
+
 	for _, members := range groups {
-		// Find maximum rank in group
-		maxRank := s.nodes[members[0]].rank
+		if len(members) < 2 {
+			continue
+		}
+		// Find minimum rank in this group
+		minRank := s.nodes[members[0]].rank
 		for _, id := range members[1:] {
-			if s.nodes[id].rank > maxRank {
-				maxRank = s.nodes[id].rank
+			if s.nodes[id].rank < minRank {
+				minRank = s.nodes[id].rank
 			}
 		}
-		// Assign all members to the max rank
+		// Move all members to the minimum rank
 		for _, id := range members {
-			s.nodes[id].rank = maxRank
+			s.nodes[id].rank = minRank
 		}
 	}
+}
 
-	// Step 2: Apply RankMin/RankMax constraints.
-	// Find current min and max ranks.
+// applyRankMinMax adjusts ranks for nodes with RankMin/RankMax constraints.
+func (s *layoutState) applyRankMinMax() {
+	if len(s.nodes) == 0 {
+		return
+	}
+
+	// Find current min and max ranks
 	minRank := 0
 	maxRank := 0
 	first := true
@@ -82,6 +93,69 @@ func (s *layoutState) applyRankConstraints() {
 			node.rank = minRank
 		case RankMax:
 			node.rank = maxRank
+		}
+	}
+}
+
+// constrainClusterRanks ensures children of each cluster occupy consecutive ranks.
+// If children are spread across non-consecutive ranks, intermediate nodes are
+// shifted to make the cluster's rank range contiguous.
+func (s *layoutState) constrainClusterRanks() {
+	if len(s.clusters) == 0 {
+		return
+	}
+
+	for clusterID := range s.clusters {
+		// Find all children of this cluster
+		var children []string
+		for childID, parentID := range s.parents {
+			if parentID == clusterID {
+				if _, ok := s.nodes[childID]; ok {
+					children = append(children, childID)
+				}
+			}
+		}
+		if len(children) < 2 {
+			continue
+		}
+
+		// Find min and max rank of children
+		minRank := s.nodes[children[0]].rank
+		maxRank := s.nodes[children[0]].rank
+		for _, id := range children[1:] {
+			r := s.nodes[id].rank
+			if r < minRank {
+				minRank = r
+			}
+			if r > maxRank {
+				maxRank = r
+			}
+		}
+
+		// Children already on consecutive ranks if maxRank - minRank + 1 == len(distinct ranks)
+		childRanks := make(map[int]bool)
+		for _, id := range children {
+			childRanks[s.nodes[id].rank] = true
+		}
+		if len(childRanks) == maxRank-minRank+1 {
+			continue // Already contiguous
+		}
+
+		// Compact: move all children to fill the range [minRank, minRank+len(childRanks)-1]
+		// Sort unique ranks and assign children accordingly
+		sortedRanks := make([]int, 0, len(childRanks))
+		for r := range childRanks {
+			sortedRanks = append(sortedRanks, r)
+		}
+		sort.Ints(sortedRanks)
+
+		rankMap := make(map[int]int)
+		for i, r := range sortedRanks {
+			rankMap[r] = minRank + i
+		}
+
+		for _, id := range children {
+			s.nodes[id].rank = rankMap[s.nodes[id].rank]
 		}
 	}
 }

@@ -30,6 +30,9 @@ func (s *layoutState) minimizeCrossings() {
 			s.sweepUp()
 		}
 
+		// Adjacent exchange: try swapping adjacent nodes to escape local minima
+		s.adjacentExchange()
+
 		// Count crossings
 		crossings := s.countCrossings()
 
@@ -45,6 +48,9 @@ func (s *layoutState) minimizeCrossings() {
 	// Restore best solution
 	s.layers = bestLayers
 	s.assignOrderFromLayers()
+
+	// Ensure cluster children are adjacent within layers
+	s.enforceClusterAdjacency()
 
 	// Port-level crossing minimization pass
 	s.minimizePortCrossings()
@@ -143,6 +149,59 @@ func (s *layoutState) sweepUp() {
 	}
 }
 
+// adjacentExchange tries swapping each pair of adjacent nodes in each layer,
+// keeping the swap if it reduces the total crossing count.
+// Skipped for large layers (>50 nodes) where the O(n²) cost is prohibitive.
+func (s *layoutState) adjacentExchange() {
+	for rank := 0; rank < len(s.layers); rank++ {
+		layer := s.layers[rank]
+		if len(layer) <= 1 || len(layer) > 50 {
+			continue
+		}
+
+		// Limit passes to prevent excessive computation
+		for pass := 0; pass < 2; pass++ {
+			improved := false
+			for i := 0; i < len(layer)-1; i++ {
+				// Count crossings before swap
+				before := s.crossingsInvolving(rank)
+
+				// Swap adjacent pair
+				layer[i], layer[i+1] = layer[i+1], layer[i]
+				s.nodes[layer[i]].order = i
+				s.nodes[layer[i+1]].order = i + 1
+
+				// Count crossings after swap
+				after := s.crossingsInvolving(rank)
+
+				if after < before {
+					improved = true
+				} else {
+					// Revert swap
+					layer[i], layer[i+1] = layer[i+1], layer[i]
+					s.nodes[layer[i]].order = i
+					s.nodes[layer[i+1]].order = i + 1
+				}
+			}
+			if !improved {
+				break
+			}
+		}
+	}
+}
+
+// crossingsInvolving counts crossings in layers adjacent to the given rank.
+func (s *layoutState) crossingsInvolving(rank int) int {
+	total := 0
+	if rank > 0 {
+		total += s.twoLayerCrossCount(s.layers[rank-1], s.layers[rank])
+	}
+	if rank < len(s.layers)-1 {
+		total += s.twoLayerCrossCount(s.layers[rank], s.layers[rank+1])
+	}
+	return total
+}
+
 // barycenterEntry holds barycenter data for sorting.
 type barycenterEntry struct {
 	nodeID     string
@@ -215,15 +274,23 @@ func (s *layoutState) sortLayerByBarycenter(rank int, neighborFn func(string) []
 	}
 }
 
-// calculateBarycenter computes the weighted average position of neighbors.
+// calculateBarycenter computes the weighted median position of neighbors.
+// This is more robust than arithmetic mean (barycenter) because it resists
+// outlier positions: a single far-away neighbor won't pull the node
+// away from the majority of its connections.
 func (s *layoutState) calculateBarycenter(nodeID string, neighborFn func(string) []string) (float64, bool) {
 	neighbors := neighborFn(nodeID)
 	if len(neighbors) == 0 {
 		return 0, false
 	}
 
-	sum := 0.0
-	weight := 0.0
+	// Collect weighted positions
+	type weightedPos struct {
+		position float64
+		weight   float64
+	}
+	var positions []weightedPos
+	totalWeight := 0.0
 
 	for _, neighborID := range neighbors {
 		neighbor := s.nodes[neighborID]
@@ -239,15 +306,39 @@ func (s *layoutState) calculateBarycenter(nodeID string, neighborFn func(string)
 			edgeWeight = edge.weight
 		}
 
-		sum += float64(neighbor.order) * edgeWeight
-		weight += edgeWeight
+		positions = append(positions, weightedPos{float64(neighbor.order), edgeWeight})
+		totalWeight += edgeWeight
 	}
 
-	if weight == 0 {
+	if totalWeight == 0 || len(positions) == 0 {
 		return 0, false
 	}
 
-	return sum / weight, true
+	// For single neighbor, just return its position
+	if len(positions) == 1 {
+		return positions[0].position, true
+	}
+
+	// Sort by position
+	sort.Slice(positions, func(i, j int) bool {
+		return positions[i].position < positions[j].position
+	})
+
+	// Find weighted median: the position where cumulative weight crosses half
+	halfWeight := totalWeight / 2
+	cumWeight := 0.0
+	for i, wp := range positions {
+		cumWeight += wp.weight
+		if cumWeight >= halfWeight {
+			// If we're exactly at the boundary, average with next position
+			if cumWeight == halfWeight && i+1 < len(positions) {
+				return (wp.position + positions[i+1].position) / 2, true
+			}
+			return wp.position, true
+		}
+	}
+
+	return positions[len(positions)-1].position, true
 }
 
 // countCrossings counts total edge crossings in the current layout.
@@ -276,7 +367,7 @@ func (s *layoutState) twoLayerCrossCount(northLayer, southLayer []string) int {
 	// Collect south positions for all edges from north, ordered by north position
 	type entry struct {
 		pos    int
-		weight int
+		weight float64
 	}
 	var southEntries []entry
 
@@ -287,9 +378,9 @@ func (s *layoutState) twoLayerCrossCount(northLayer, southLayer []string) int {
 			if !ok {
 				continue // Edge to different layer
 			}
-			weight := 1
+			weight := 1.0
 			if edge := s.edges[edgeKey{from: v, to: w}]; edge != nil {
-				weight = int(edge.weight)
+				weight = edge.weight
 				if weight < 1 {
 					weight = 1
 				}
@@ -315,15 +406,15 @@ func (s *layoutState) twoLayerCrossCount(northLayer, southLayer []string) int {
 	}
 	treeSize := 2*firstIndex - 1
 	firstIndex--
-	tree := make([]int, treeSize)
+	tree := make([]float64, treeSize)
 
 	// Count crossings using the accumulator tree
-	cc := 0
+	cc := 0.0
 	for _, e := range southEntries {
 		index := e.pos + firstIndex
 		tree[index] += e.weight
 
-		weightSum := 0
+		weightSum := 0.0
 		for index > 0 {
 			if index%2 == 1 { // Left child
 				weightSum += tree[index+1] // Add right sibling
@@ -334,7 +425,86 @@ func (s *layoutState) twoLayerCrossCount(northLayer, southLayer []string) int {
 		cc += e.weight * weightSum
 	}
 
-	return cc
+	return int(cc)
+}
+
+// enforceClusterAdjacency ensures children of each cluster are placed
+// adjacently within their layer. Non-cluster nodes between cluster children
+// are moved to either side of the cluster block.
+func (s *layoutState) enforceClusterAdjacency() {
+	if len(s.clusters) == 0 {
+		return
+	}
+
+	for rank := range s.layers {
+		layer := s.layers[rank]
+		if len(layer) <= 1 {
+			continue
+		}
+
+		// Find which nodes belong to which cluster in this layer
+		clusterMembers := make(map[string][]int) // cluster ID -> positions in layer
+		for i, id := range layer {
+			if parent, ok := s.parents[id]; ok && parent != "" {
+				if _, isCluster := s.clusters[parent]; isCluster {
+					clusterMembers[parent] = append(clusterMembers[parent], i)
+				}
+			}
+		}
+
+		// For each cluster with members in this layer, check if they're adjacent
+		for _, positions := range clusterMembers {
+			if len(positions) <= 1 {
+				continue
+			}
+
+			// Check if positions are contiguous
+			minPos := positions[0]
+			maxPos := positions[0]
+			posSet := make(map[int]bool)
+			for _, p := range positions {
+				posSet[p] = true
+				if p < minPos {
+					minPos = p
+				}
+				if p > maxPos {
+					maxPos = p
+				}
+			}
+
+			if maxPos-minPos+1 == len(positions) {
+				continue // Already contiguous
+			}
+
+			// Reorder: collect cluster members and non-members, then reassemble
+			var clusterNodes []string
+			var beforeNodes []string
+			var afterNodes []string
+
+			clusterStart := minPos
+			for i, id := range layer {
+				if posSet[i] {
+					clusterNodes = append(clusterNodes, id)
+				} else if i < clusterStart {
+					beforeNodes = append(beforeNodes, id)
+				} else {
+					afterNodes = append(afterNodes, id)
+				}
+			}
+
+			// Reassemble: before + cluster + after
+			newLayer := make([]string, 0, len(layer))
+			newLayer = append(newLayer, beforeNodes...)
+			newLayer = append(newLayer, clusterNodes...)
+			newLayer = append(newLayer, afterNodes...)
+			s.layers[rank] = newLayer
+
+			// Update order values
+			for i, id := range s.layers[rank] {
+				s.nodes[id].order = i
+			}
+		}
+	}
 }
 
 // minimizePortCrossings adjusts node ordering to account for port positions.
@@ -411,30 +581,36 @@ func (s *layoutState) adjustForPortPositions(rank int) {
 				if neighbor == nil || neighbor.rank != rank {
 					continue
 				}
-				// Check if the edge uses a port on the neighbor
+
+				// Look up edge directly via map (O(1) per lookup)
 				portOffset := 0.0
 				hasPort := false
-				for _, edge := range s.edges {
-					if (edge.key.from == nodeID && edge.key.to == neighborID) ||
-						(edge.key.from == neighborID && edge.key.to == nodeID) {
-						portID := ""
-						if edge.key.from == neighborID {
-							portID = edge.sourcePort
-						} else {
-							portID = edge.targetPort
-						}
-						if portID != "" {
-							for _, port := range neighbor.ports {
-								if port.ID == portID {
-									portOffset = port.Offset
-									hasPort = true
-									break
-								}
+
+				// Check both directions
+				if edge := s.edges[edgeKey{from: nodeID, to: neighborID}]; edge != nil {
+					portID := edge.targetPort
+					if portID != "" {
+						for _, port := range neighbor.ports {
+							if port.ID == portID {
+								portOffset = port.Offset
+								hasPort = true
+								break
 							}
 						}
-						break
+					}
+				} else if edge := s.edges[edgeKey{from: neighborID, to: nodeID}]; edge != nil {
+					portID := edge.sourcePort
+					if portID != "" {
+						for _, port := range neighbor.ports {
+							if port.ID == portID {
+								portOffset = port.Offset
+								hasPort = true
+								break
+							}
+						}
 					}
 				}
+
 				if hasPort {
 					sum += (float64(neighbor.order) + portOffset/100.0)
 					weight += 1.0

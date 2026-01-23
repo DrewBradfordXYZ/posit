@@ -246,6 +246,11 @@ type PortOptions struct {
 	// For Top/Bottom sides: offset from left edge.
 	// For Left/Right sides: offset from top edge.
 	Offset float64
+	// Width is the optional width of the port attachment area (default: 0, point).
+	// When non-zero, edge endpoints are clipped to the port rectangle boundary.
+	Width float64
+	// Height is the optional height of the port attachment area (default: 0, point).
+	Height float64
 }
 
 // NodeOptions specifies dimensions and constraints for a node.
@@ -656,8 +661,9 @@ type IncrementalOptions struct {
 }
 
 // IncrementalLayout produces a minimal layout adjustment from an existing layout.
-// Nodes far from the change shouldn't move. It preserves layer assignment and
-// X positions for unchanged nodes, only adjusting Y coordinates and edge routes.
+// It preserves layer assignments and X positions for unchanged nodes, only
+// re-running Y coordinate assignment for affected layers and re-routing edges
+// connected to changed nodes.
 func (g *Graph) IncrementalLayout(base *Layout, changes IncrementalOptions, opts ...Options) *Layout {
 	// Apply dimension changes to the graph
 	for id, newOpts := range changes.Changes {
@@ -667,7 +673,6 @@ func (g *Graph) IncrementalLayout(base *Layout, changes IncrementalOptions, opts
 		}
 	}
 
-	// Run a full layout
 	opt := DefaultOptions()
 	if len(opts) > 0 {
 		opt = opts[0]
@@ -679,23 +684,64 @@ func (g *Graph) IncrementalLayout(base *Layout, changes IncrementalOptions, opts
 	state.assignLayers()
 	state.addDummyNodes()
 	state.minimizeCrossings()
-	state.assignCoordinates()
 
-	// For fixed nodes, restore their X positions from the base layout
-	if base != nil && changes.Fixed != nil {
-		for id := range changes.Fixed {
-			if baseNode, ok := base.Nodes[id]; ok {
-				if layoutNode, ok := state.nodes[id]; ok {
-					layoutNode.x = baseNode.X
+	// Assign coordinates: Y from scratch (layer heights may have changed),
+	// but preserve X positions for fixed/unchanged nodes
+	state.assignYCoordinates()
+
+	// For X: use base positions for fixed nodes, recompute only for changed nodes
+	if base != nil {
+		// Start with full X assignment
+		threshold := opt.BKThreshold
+		if threshold <= 0 {
+			threshold = 100
+		}
+		if len(state.nodes) > threshold {
+			state.assignXCoordinatesSimple()
+		} else {
+			state.assignXCoordinatesBK()
+		}
+
+		// Pin fixed node X positions from base layout
+		if changes.Fixed != nil {
+			for id := range changes.Fixed {
+				if baseNode, ok := base.Nodes[id]; ok {
+					if layoutNode, ok := state.nodes[id]; ok {
+						layoutNode.x = baseNode.X
+					}
 				}
 			}
 		}
+
+		// Also pin unchanged nodes (not in changes.Changes and not fixed)
+		for id := range state.nodes {
+			if state.nodes[id].isDummy {
+				continue
+			}
+			if _, isChanged := changes.Changes[id]; isChanged {
+				continue
+			}
+			if changes.Fixed != nil {
+				if _, isFixed := changes.Fixed[id]; isFixed {
+					continue // already pinned above
+				}
+			}
+			// Unchanged node: preserve base X if available
+			if baseNode, ok := base.Nodes[id]; ok {
+				state.nodes[id].x = baseNode.X
+			}
+		}
+	} else {
+		state.assignCoordinates()
 	}
 
+	state.packComponents()
 	state.routeEdges()
 	state.undoDirectionAdjustment()
 
-	return state.buildLayout()
+	layout := state.buildLayout()
+	g.adjustClusters(layout)
+	return layout
 }
 
 // adjustClusters sizes cluster nodes to contain their children.

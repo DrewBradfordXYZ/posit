@@ -95,6 +95,10 @@ type layoutState struct {
 
 	// Self-loops (edges where source == target)
 	selfLoops []*layoutEdge
+
+	// Compound graph (clusters)
+	parents  map[string]string  // child -> parent cluster ID
+	clusters map[string]float64 // cluster ID -> padding
 }
 
 // newLayoutState initializes internal state from a Graph.
@@ -105,6 +109,8 @@ func newLayoutState(g *Graph, opts Options) *layoutState {
 		edges:        make(map[edgeKey]*layoutEdge, len(g.edges)),
 		successors:   make(map[string][]string, len(g.nodes)),
 		predecessors: make(map[string][]string, len(g.nodes)),
+		parents:      g.parents,
+		clusters:     g.clusters,
 	}
 
 	// Copy nodes

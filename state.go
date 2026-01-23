@@ -1,9 +1,10 @@
 package posit
 
-// edgeKey uniquely identifies an edge by its endpoints.
+// edgeKey uniquely identifies an edge by its endpoints and optional ID.
 type edgeKey struct {
 	from string
 	to   string
+	id   string // for multi-edge support
 }
 
 // layoutNode holds internal state for a node during layout.
@@ -15,6 +16,17 @@ type layoutNode struct {
 	// Input order (from Graph.AddNode calls) for deterministic initial ordering.
 	// Used by buildLayers() to preserve user-defined node sequence.
 	insertOrder int
+
+	// Rank constraints
+	rankConstraint RankConstraint
+	rankGroup      string
+
+	// Order constraints
+	orderGroup    string
+	orderPriority int
+
+	// Ports
+	ports []PortOptions
 
 	// Phase 2 output
 	rank int
@@ -37,6 +49,13 @@ type layoutEdge struct {
 	minlen   int
 	reversed bool
 
+	// Multi-edge ID
+	id string
+
+	// Port connections
+	sourcePort string
+	targetPort string
+
 	// Edge label info
 	labelWidth   float64
 	labelHeight  float64
@@ -46,7 +65,9 @@ type layoutEdge struct {
 	labelY       float64 // computed label Y coordinate
 
 	// Phase 6 output
-	points []EdgePoint
+	points     []EdgePoint
+	sourceSide Side
+	targetSide Side
 }
 
 // layoutState holds all internal state during the layout process.
@@ -89,47 +110,70 @@ func newLayoutState(g *Graph, opts Options) *layoutState {
 	// Copy nodes
 	for id, n := range g.nodes {
 		s.nodes[id] = &layoutNode{
-			id:          id,
-			width:       n.width,
-			height:      n.height,
-			insertOrder: n.insertOrder,
+			id:             id,
+			width:          n.width,
+			height:         n.height,
+			insertOrder:    n.insertOrder,
+			rankConstraint: n.rankConstraint,
+			rankGroup:      n.rankGroup,
+			orderGroup:     n.orderGroup,
+			orderPriority:  n.orderPriority,
+			ports:          n.ports,
 		}
 		// Initialize empty adjacency lists
 		s.successors[id] = []string{}
 		s.predecessors[id] = []string{}
 	}
 
-	// Copy edges with aggregation and build adjacency lists
-	edgeSeen := make(map[edgeKey]bool)
+	// Copy edges with aggregation and build adjacency lists.
+	// Edges with an ID are kept separate (multi-edge support).
+	// Edges without an ID are aggregated as before.
+	adjacencySeen := make(map[[2]string]bool)
 	for _, e := range g.edges {
-		key := edgeKey{from: e.from, to: e.to}
+		key := edgeKey{from: e.from, to: e.to, id: e.id}
 
-		if existing := s.edges[key]; existing != nil {
-			// Aggregate: sum weights for duplicate edges
-			existing.weight += 1
-			// If this edge has label info and existing doesn't, copy it
-			if existing.labelWidth == 0 && e.labelWidth > 0 {
-				existing.labelWidth = e.labelWidth
-				existing.labelHeight = e.labelHeight
-				existing.labelPos = e.labelPos
+		// For edges without an ID, aggregate duplicates
+		if e.id == "" {
+			if existing := s.edges[key]; existing != nil {
+				// Aggregate: sum weights for duplicate edges
+				w := e.weight
+				if w <= 0 {
+					w = 1
+				}
+				existing.weight += w
+				// If this edge has label info and existing doesn't, copy it
+				if existing.labelWidth == 0 && e.labelWidth > 0 {
+					existing.labelWidth = e.labelWidth
+					existing.labelHeight = e.labelHeight
+					existing.labelPos = e.labelPos
+				}
+				continue
 			}
-			continue
+		}
+
+		w := e.weight
+		if w <= 0 {
+			w = 1
 		}
 
 		s.edges[key] = &layoutEdge{
 			key:         key,
-			weight:      1,
+			weight:      w,
 			minlen:      1,
+			id:          e.id,
+			sourcePort:  e.sourcePort,
+			targetPort:  e.targetPort,
 			labelWidth:  e.labelWidth,
 			labelHeight: e.labelHeight,
 			labelPos:    e.labelPos,
 		}
 
-		// Only add to adjacency lists once
-		if !edgeSeen[key] {
+		// Only add to adjacency lists once per (from, to) pair
+		adjKey := [2]string{e.from, e.to}
+		if !adjacencySeen[adjKey] {
 			s.successors[e.from] = append(s.successors[e.from], e.to)
 			s.predecessors[e.to] = append(s.predecessors[e.to], e.from)
-			edgeSeen[key] = true
+			adjacencySeen[adjKey] = true
 		}
 	}
 
@@ -156,14 +200,21 @@ func (s *layoutState) buildLayout() *Layout {
 	}
 
 	// Export edges with structured keys
-	// Note: The string key format "from->to" is used for backward compatibility.
+	// Format: "from->to" for simple edges, "from->to:id" for multi-edges.
 	// For unambiguous edge lookup, use Layout.Edge(from, to) method.
 	for key, e := range s.edges {
 		edgeID := key.from + "->" + key.to
+		if key.id != "" {
+			edgeID += ":" + key.id
+		}
 		edgeLayout := EdgeLayout{
-			From:   key.from,
-			To:     key.to,
-			Points: e.points,
+			From:       key.from,
+			To:         key.to,
+			Points:     e.points,
+			SourcePort: e.sourcePort,
+			TargetPort: e.targetPort,
+			SourceSide: e.sourceSide,
+			TargetSide: e.targetSide,
 		}
 		// Include label position if edge has a label
 		if e.labelWidth > 0 || e.labelHeight > 0 {

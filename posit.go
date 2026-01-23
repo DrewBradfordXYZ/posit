@@ -103,6 +103,7 @@ package posit
 
 import (
 	"fmt"
+	"math"
 	"sort"
 )
 
@@ -141,6 +142,26 @@ const (
 	GreedyAcyclicer
 )
 
+// RouteStyle specifies the edge routing algorithm.
+type RouteStyle int
+
+const (
+	// RoutePolyline uses the current behavior: polyline paths through dummy nodes (default).
+	RoutePolyline RouteStyle = iota
+	// RouteOrthogonal uses channel-routed horizontal/vertical segments.
+	RouteOrthogonal
+)
+
+// ComponentPacking specifies how disconnected components are arranged.
+type ComponentPacking int
+
+const (
+	// PackHorizontal arranges components side by side (default).
+	PackHorizontal ComponentPacking = iota
+	// PackVertical stacks components vertically.
+	PackVertical
+)
+
 // Options configures the layout algorithm.
 type Options struct {
 	// Direction of the layout (default: TopToBottom)
@@ -162,6 +183,20 @@ type Options struct {
 	// switches from Brandes-Köpf (optimal but slower) to simple centering.
 	// Default: 100. Set higher if you want better alignment for larger graphs.
 	BKThreshold int
+
+	// RouteStyle selects the edge routing algorithm (default: RoutePolyline).
+	RouteStyle RouteStyle
+
+	// ChannelGap is the spacing between parallel edges in orthogonal routing channels.
+	// Only used when RouteStyle is RouteOrthogonal. Default: 10.
+	ChannelGap float64
+
+	// ComponentPacking controls how disconnected components are arranged (default: PackHorizontal).
+	ComponentPacking ComponentPacking
+
+	// ComponentGap is the spacing between disconnected components.
+	// Default: NodeSep * 2.
+	ComponentGap float64
 }
 
 // DefaultOptions returns sensible defaults for layout.
@@ -175,10 +210,74 @@ func DefaultOptions() Options {
 	}
 }
 
-// NodeOptions specifies dimensions for a node.
+// RankConstraint specifies how a node's layer is constrained.
+type RankConstraint int
+
+const (
+	// RankUnconstrained allows normal layer assignment (default).
+	RankUnconstrained RankConstraint = iota
+	// RankMin forces the node to the first (top) layer.
+	RankMin
+	// RankMax forces the node to the last (bottom) layer.
+	RankMax
+)
+
+// Side specifies which side of a node an edge connects to.
+type Side int
+
+const (
+	// Top is the top side of a node.
+	Top Side = iota
+	// Bottom is the bottom side of a node.
+	Bottom
+	// Left is the left side of a node.
+	Left
+	// Right is the right side of a node.
+	Right
+)
+
+// PortOptions specifies a fixed connection point on a node.
+type PortOptions struct {
+	// ID uniquely identifies this port within the node (e.g., "in-1", "out-2").
+	ID string
+	// Side specifies which side of the node this port is on.
+	Side Side
+	// Offset is the distance from the node origin along the side.
+	// For Top/Bottom sides: offset from left edge.
+	// For Left/Right sides: offset from top edge.
+	Offset float64
+}
+
+// NodeOptions specifies dimensions and constraints for a node.
 type NodeOptions struct {
 	Width  float64
 	Height float64
+
+	// RankConstraint pins the node to the min or max layer.
+	RankConstraint RankConstraint
+
+	// RankGroup groups nodes to share the same layer.
+	// Nodes with the same non-empty RankGroup are placed on the same layer.
+	RankGroup string
+
+	// OrderGroup groups nodes to be placed adjacently within their layer.
+	// Nodes with the same non-empty OrderGroup cluster together.
+	OrderGroup string
+
+	// OrderPriority controls ordering within an OrderGroup.
+	// Lower priority = further left (or top for vertical layouts).
+	OrderPriority int
+
+	// Ports specifies fixed connection points on this node.
+	Ports []PortOptions
+
+	// IsCluster marks this node as a compound graph cluster container.
+	// Cluster nodes contain child nodes set via Graph.SetParent().
+	IsCluster bool
+
+	// Padding is the internal padding for cluster nodes (default: 20).
+	// Only used when IsCluster is true.
+	Padding float64
 }
 
 // LabelPosition specifies where an edge label is positioned along the edge.
@@ -195,6 +294,20 @@ const (
 
 // EdgeOptions specifies options for an edge including optional label dimensions.
 type EdgeOptions struct {
+	// ID distinguishes multiple edges between the same node pair.
+	// When specified, the edge key becomes "from->to:id" instead of "from->to".
+	ID string
+
+	// Weight influences layout priority (default: 1.0, higher = more important).
+	// Heavier edges are less likely to be reversed during cycle removal and
+	// crossing minimization favors keeping them uncrossed.
+	Weight float64
+
+	// SourcePort connects this edge to a specific port on the source node.
+	SourcePort string
+	// TargetPort connects this edge to a specific port on the target node.
+	TargetPort string
+
 	// LabelWidth is the width of the edge label (0 for no label)
 	LabelWidth float64
 	// LabelHeight is the height of the edge label (0 for no label)
@@ -240,6 +353,15 @@ type EdgeLayout struct {
 	Points []EdgePoint
 	// Label contains the computed label position, if the edge has a label
 	Label *LabelLayout
+
+	// SourcePort is the port ID the edge exits from (if specified)
+	SourcePort string
+	// TargetPort is the port ID the edge enters (if specified)
+	TargetPort string
+	// SourceSide is the computed attachment side on the source node
+	SourceSide Side
+	// TargetSide is the computed attachment side on the target node
+	TargetSide Side
 }
 
 // Layout contains the computed positions for all nodes and edges.
@@ -266,18 +388,31 @@ type Graph struct {
 	edges     []*edge
 	edgeSet   map[[2]string]bool // for O(1) edge lookup
 	nextOrder int               // tracks insertion order for deterministic layout
+	parents   map[string]string  // child -> parent for compound graphs
+	clusters  map[string]float64 // cluster ID -> padding
 }
 
 type node struct {
-	id          string
-	width       float64
-	height      float64
-	insertOrder int // preserves AddNode() call order for initial layer ordering
+	id             string
+	width          float64
+	height         float64
+	insertOrder    int // preserves AddNode() call order for initial layer ordering
+	rankConstraint RankConstraint
+	rankGroup      string
+	orderGroup     string
+	orderPriority  int
+	ports          []PortOptions
+	isCluster      bool
+	padding        float64
 }
 
 type edge struct {
 	from        string
 	to          string
+	id          string // for multi-edge support
+	weight      float64
+	sourcePort  string
+	targetPort  string
 	labelWidth  float64
 	labelHeight float64
 	labelPos    LabelPosition
@@ -286,10 +421,35 @@ type edge struct {
 // NewGraph creates a new empty graph.
 func NewGraph() *Graph {
 	return &Graph{
-		nodes:   make(map[string]*node),
-		edges:   make([]*edge, 0),
-		edgeSet: make(map[[2]string]bool),
+		nodes:    make(map[string]*node),
+		edges:    make([]*edge, 0),
+		edgeSet:  make(map[[2]string]bool),
+		parents:  make(map[string]string),
+		clusters: make(map[string]float64),
 	}
+}
+
+// SetParent sets a node's parent cluster.
+// The parent must be a node added with IsCluster: true in NodeOptions.
+func (g *Graph) SetParent(child, parent string) {
+	g.parents[child] = parent
+}
+
+// Parent returns the parent cluster of a node, or empty string if none.
+func (g *Graph) Parent(child string) string {
+	return g.parents[child]
+}
+
+// Children returns all direct children of a cluster node.
+func (g *Graph) Children(parent string) []string {
+	var children []string
+	for child, p := range g.parents {
+		if p == parent {
+			children = append(children, child)
+		}
+	}
+	sort.Strings(children)
+	return children
 }
 
 // AddNode adds a node with the given ID and dimensions.
@@ -301,11 +461,25 @@ func (g *Graph) AddNode(id string, opts NodeOptions) {
 	} else {
 		g.nextOrder++
 	}
+	padding := opts.Padding
+	if opts.IsCluster && padding == 0 {
+		padding = 20 // default cluster padding
+	}
 	g.nodes[id] = &node{
-		id:          id,
-		width:       opts.Width,
-		height:      opts.Height,
-		insertOrder: order,
+		id:             id,
+		width:          opts.Width,
+		height:         opts.Height,
+		insertOrder:    order,
+		rankConstraint: opts.RankConstraint,
+		rankGroup:      opts.RankGroup,
+		orderGroup:     opts.OrderGroup,
+		orderPriority:  opts.OrderPriority,
+		ports:          opts.Ports,
+		isCluster:      opts.IsCluster,
+		padding:        padding,
+	}
+	if opts.IsCluster {
+		g.clusters[id] = padding
 	}
 }
 
@@ -318,11 +492,14 @@ func (g *Graph) HasNode(id string) bool {
 // AddEdge adds a directed edge from source to target.
 // Returns an error if either node does not exist.
 //
-// If an edge from source to target already exists, the edges are
-// aggregated: their weights are summed for crossing minimization
+// If an edge from source to target already exists (and no ID is specified),
+// the edges are aggregated: their weights are summed for crossing minimization
 // and ranking calculations. The first edge's label options are preserved.
 //
-// Optional EdgeOptions can be provided to specify label dimensions.
+// When EdgeOptions.ID is specified, multiple distinct edges between the same
+// node pair are preserved as separate paths.
+//
+// Optional EdgeOptions can be provided to specify label dimensions, weight, and ports.
 func (g *Graph) AddEdge(from, to string, opts ...EdgeOptions) error {
 	if _, ok := g.nodes[from]; !ok {
 		return fmt.Errorf("posit: source node %q does not exist", from)
@@ -332,6 +509,10 @@ func (g *Graph) AddEdge(from, to string, opts ...EdgeOptions) error {
 	}
 	e := &edge{from: from, to: to}
 	if len(opts) > 0 {
+		e.id = opts[0].ID
+		e.weight = opts[0].Weight
+		e.sourcePort = opts[0].SourcePort
+		e.targetPort = opts[0].TargetPort
 		e.labelWidth = opts[0].LabelWidth
 		e.labelHeight = opts[0].LabelHeight
 		e.labelPos = opts[0].LabelPosition
@@ -384,13 +565,21 @@ func (g *Graph) HasEdge(from, to string) bool {
 	return g.edgeSet[[2]string{from, to}]
 }
 
-// Node returns the dimensions of a node, or false if not found.
+// Node returns the options of a node, or false if not found.
 func (g *Graph) Node(id string) (NodeOptions, bool) {
 	n, ok := g.nodes[id]
 	if !ok {
 		return NodeOptions{}, false
 	}
-	return NodeOptions{Width: n.width, Height: n.height}, true
+	return NodeOptions{
+		Width:          n.width,
+		Height:         n.height,
+		RankConstraint: n.rankConstraint,
+		RankGroup:      n.rankGroup,
+		OrderGroup:     n.orderGroup,
+		OrderPriority:  n.orderPriority,
+		Ports:          n.ports,
+	}, true
 }
 
 // Layout computes positions for all nodes and edges.
@@ -442,13 +631,128 @@ func (g *Graph) LayoutWithError(opts ...Options) (*Layout, error) {
 	// Phase 5: Assign X/Y coordinates
 	state.assignCoordinates()
 
+	// Phase 5b: Pack disconnected components
+	state.packComponents()
+
 	// Phase 6: Route edges and restore reversed edges
 	state.routeEdges()
 
 	// Post-transform for direction (convert coordinates)
 	state.undoDirectionAdjustment()
 
-	return state.buildLayout(), nil
+	// Compound graph: size cluster nodes to contain their children
+	layout := state.buildLayout()
+	g.adjustClusters(layout)
+
+	return layout, nil
+}
+
+// IncrementalOptions configures an incremental layout update.
+type IncrementalOptions struct {
+	// Fixed lists node IDs that should not move.
+	Fixed map[string]bool
+	// Changes maps node IDs to their new dimensions.
+	Changes map[string]NodeOptions
+}
+
+// IncrementalLayout produces a minimal layout adjustment from an existing layout.
+// Nodes far from the change shouldn't move. It preserves layer assignment and
+// X positions for unchanged nodes, only adjusting Y coordinates and edge routes.
+func (g *Graph) IncrementalLayout(base *Layout, changes IncrementalOptions, opts ...Options) *Layout {
+	// Apply dimension changes to the graph
+	for id, newOpts := range changes.Changes {
+		if _, ok := g.nodes[id]; ok {
+			g.nodes[id].width = newOpts.Width
+			g.nodes[id].height = newOpts.Height
+		}
+	}
+
+	// Run a full layout
+	opt := DefaultOptions()
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	state := newLayoutState(g, opt)
+	state.adjustForDirection()
+	state.makeAcyclic()
+	state.assignLayers()
+	state.addDummyNodes()
+	state.minimizeCrossings()
+	state.assignCoordinates()
+
+	// For fixed nodes, restore their X positions from the base layout
+	if base != nil && changes.Fixed != nil {
+		for id := range changes.Fixed {
+			if baseNode, ok := base.Nodes[id]; ok {
+				if layoutNode, ok := state.nodes[id]; ok {
+					layoutNode.x = baseNode.X
+				}
+			}
+		}
+	}
+
+	state.routeEdges()
+	state.undoDirectionAdjustment()
+
+	return state.buildLayout()
+}
+
+// adjustClusters sizes cluster nodes to contain their children.
+func (g *Graph) adjustClusters(layout *Layout) {
+	if len(g.clusters) == 0 {
+		return
+	}
+
+	// Process clusters (may need multiple passes for nested clusters)
+	for clusterID, padding := range g.clusters {
+		children := g.Children(clusterID)
+		if len(children) == 0 {
+			continue
+		}
+
+		// Find bounding box of all children
+		minX := math.Inf(1)
+		minY := math.Inf(1)
+		maxX := math.Inf(-1)
+		maxY := math.Inf(-1)
+
+		hasChild := false
+		for _, childID := range children {
+			childLayout, ok := layout.Nodes[childID]
+			if !ok {
+				continue
+			}
+			hasChild = true
+			if childLayout.X < minX {
+				minX = childLayout.X
+			}
+			if childLayout.Y < minY {
+				minY = childLayout.Y
+			}
+			if childLayout.X+childLayout.Width > maxX {
+				maxX = childLayout.X + childLayout.Width
+			}
+			if childLayout.Y+childLayout.Height > maxY {
+				maxY = childLayout.Y + childLayout.Height
+			}
+		}
+
+		if !hasChild {
+			continue
+		}
+
+		// Set cluster position and size to contain children with padding
+		clusterLayout := NodeLayout{
+			Position: Position{
+				X: minX - padding,
+				Y: minY - padding,
+			},
+			Width:  (maxX - minX) + 2*padding,
+			Height: (maxY - minY) + 2*padding,
+		}
+		layout.Nodes[clusterID] = clusterLayout
+	}
 }
 
 // Validate checks that the options are valid.

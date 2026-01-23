@@ -13,11 +13,77 @@ func (s *layoutState) assignLayers() {
 		s.assignLayersLongestPath()
 	}
 
+	// Apply rank constraints after initial assignment
+	s.applyRankConstraints()
+
 	// Normalize ranks to start at 0
 	s.normalizeRanks()
 
 	// Build layers array
 	s.buildLayers()
+}
+
+// applyRankConstraints adjusts node ranks based on user-specified constraints.
+// This runs after initial rank assignment and before normalization.
+func (s *layoutState) applyRankConstraints() {
+	if len(s.nodes) == 0 {
+		return
+	}
+
+	// Step 1: Apply RankGroup constraints.
+	// Nodes in the same group get the same rank (maximum rank among group members
+	// to satisfy edge constraints).
+	groups := make(map[string][]string)
+	for id, node := range s.nodes {
+		if node.rankGroup != "" && !node.isDummy {
+			groups[node.rankGroup] = append(groups[node.rankGroup], id)
+		}
+	}
+	for _, members := range groups {
+		// Find maximum rank in group
+		maxRank := s.nodes[members[0]].rank
+		for _, id := range members[1:] {
+			if s.nodes[id].rank > maxRank {
+				maxRank = s.nodes[id].rank
+			}
+		}
+		// Assign all members to the max rank
+		for _, id := range members {
+			s.nodes[id].rank = maxRank
+		}
+	}
+
+	// Step 2: Apply RankMin/RankMax constraints.
+	// Find current min and max ranks.
+	minRank := 0
+	maxRank := 0
+	first := true
+	for _, node := range s.nodes {
+		if first {
+			minRank = node.rank
+			maxRank = node.rank
+			first = false
+		} else {
+			if node.rank < minRank {
+				minRank = node.rank
+			}
+			if node.rank > maxRank {
+				maxRank = node.rank
+			}
+		}
+	}
+
+	for _, node := range s.nodes {
+		if node.isDummy {
+			continue
+		}
+		switch node.rankConstraint {
+		case RankMin:
+			node.rank = minRank
+		case RankMax:
+			node.rank = maxRank
+		}
+	}
 }
 
 // assignLayersTightTree uses longest-path followed by tight tree construction.

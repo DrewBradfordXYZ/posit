@@ -45,12 +45,65 @@ func (s *layoutState) minimizeCrossings() {
 	// Restore best solution
 	s.layers = bestLayers
 	s.assignOrderFromLayers()
+
+	// Port-level crossing minimization pass
+	s.minimizePortCrossings()
 }
 
-// initOrder assigns initial order using the current layer positions.
-// Nodes are already placed in layers by buildLayers in a deterministic order.
+// initOrder assigns initial order using the current layer positions,
+// then applies ordering constraints.
 func (s *layoutState) initOrder() {
+	s.applyOrderConstraints()
 	s.assignOrderFromLayers()
+}
+
+// applyOrderConstraints reorders nodes within each layer to respect
+// OrderGroup and OrderPriority constraints before crossing minimization.
+func (s *layoutState) applyOrderConstraints() {
+	for rank := range s.layers {
+		layer := s.layers[rank]
+		if len(layer) <= 1 {
+			continue
+		}
+
+		// Check if any node has constraints
+		hasConstraints := false
+		for _, id := range layer {
+			if s.nodes[id].orderGroup != "" {
+				hasConstraints = true
+				break
+			}
+		}
+		if !hasConstraints {
+			continue
+		}
+
+		// Sort by (OrderGroup, OrderPriority, insertOrder)
+		sort.SliceStable(layer, func(i, j int) bool {
+			ni := s.nodes[layer[i]]
+			nj := s.nodes[layer[j]]
+
+			gi := ni.orderGroup
+			gj := nj.orderGroup
+
+			if gi != "" || gj != "" {
+				if gi != gj {
+					if gi == "" {
+						return false
+					}
+					if gj == "" {
+						return true
+					}
+					return gi < gj
+				}
+				// Same group: sort by priority
+				if ni.orderPriority != nj.orderPriority {
+					return ni.orderPriority < nj.orderPriority
+				}
+			}
+			return ni.insertOrder < nj.insertOrder
+		})
+	}
 }
 
 // assignOrderFromLayers sets node.order based on position in layer.
@@ -97,7 +150,8 @@ type barycenterEntry struct {
 	hasValue   bool
 }
 
-// sortLayerByBarycenter sorts a layer based on neighbor barycenters.
+// sortLayerByBarycenter sorts a layer based on neighbor barycenters,
+// respecting ordering constraints (OrderGroup, OrderPriority).
 func (s *layoutState) sortLayerByBarycenter(rank int, neighborFn func(string) []string) {
 	layer := s.layers[rank]
 	if len(layer) <= 1 {
@@ -115,13 +169,38 @@ func (s *layoutState) sortLayerByBarycenter(rank int, neighborFn func(string) []
 		}
 	}
 
-	// Sort by barycenter (stable sort preserves order for equal values)
+	// Sort by: (OrderGroup, OrderPriority, barycenter)
 	sort.SliceStable(entries, func(i, j int) bool {
+		ni := s.nodes[entries[i].nodeID]
+		nj := s.nodes[entries[j].nodeID]
+
+		// If both have order groups, group takes precedence
+		gi := ni.orderGroup
+		gj := nj.orderGroup
+
+		if gi != "" || gj != "" {
+			if gi != gj {
+				// Nodes in a group sort before ungrouped nodes
+				if gi == "" {
+					return false
+				}
+				if gj == "" {
+					return true
+				}
+				return gi < gj
+			}
+			// Same group: sort by priority
+			if ni.orderPriority != nj.orderPriority {
+				return ni.orderPriority < nj.orderPriority
+			}
+		}
+
+		// Fallback to barycenter
 		if !entries[i].hasValue && !entries[j].hasValue {
-			return false // Keep original order
+			return false
 		}
 		if !entries[i].hasValue {
-			return false // Nodes without neighbors go to end
+			return false
 		}
 		if !entries[j].hasValue {
 			return true
@@ -256,4 +335,144 @@ func (s *layoutState) twoLayerCrossCount(northLayer, southLayer []string) int {
 	}
 
 	return cc
+}
+
+// minimizePortCrossings adjusts node ordering to account for port positions.
+// When nodes have multiple ports on the same side, this considers port offsets
+// as sub-ordering weights so connected nodes are placed at heights matching
+// port positions.
+func (s *layoutState) minimizePortCrossings() {
+	// For each layer, check if any nodes have ports that could benefit
+	// from reordering based on port positions.
+	for rank := 0; rank < len(s.layers); rank++ {
+		layer := s.layers[rank]
+		if len(layer) <= 1 {
+			continue
+		}
+
+		// Check if any node in this layer has ports
+		hasPorts := false
+		for _, id := range layer {
+			if len(s.nodes[id].ports) > 0 {
+				hasPorts = true
+				break
+			}
+		}
+		if !hasPorts {
+			continue
+		}
+
+		// For nodes connected to ported nodes, adjust barycenters
+		// using port offsets as weights
+		s.adjustForPortPositions(rank)
+	}
+}
+
+// adjustForPortPositions refines ordering of a layer considering port offsets.
+func (s *layoutState) adjustForPortPositions(rank int) {
+	_ = s.layers[rank] // validate rank is in bounds
+
+	// For each node in adjacent layers that connects to ports in this layer,
+	// compute a port-weighted barycenter
+	for adjRank := rank - 1; adjRank <= rank+1; adjRank += 2 {
+		if adjRank < 0 || adjRank >= len(s.layers) {
+			continue
+		}
+
+		adjLayer := s.layers[adjRank]
+		type portBarycenter struct {
+			nodeID string
+			value  float64
+			valid  bool
+		}
+
+		barycenters := make([]portBarycenter, len(adjLayer))
+		changed := false
+
+		for i, nodeID := range adjLayer {
+			node := s.nodes[nodeID]
+			if node == nil {
+				barycenters[i] = portBarycenter{nodeID: nodeID}
+				continue
+			}
+
+			// Find edges connecting to ports in the target layer
+			var neighbors []string
+			if adjRank < rank {
+				neighbors = s.successors[nodeID]
+			} else {
+				neighbors = s.predecessors[nodeID]
+			}
+
+			sum := 0.0
+			weight := 0.0
+			for _, neighborID := range neighbors {
+				neighbor := s.nodes[neighborID]
+				if neighbor == nil || neighbor.rank != rank {
+					continue
+				}
+				// Check if the edge uses a port on the neighbor
+				portOffset := 0.0
+				hasPort := false
+				for _, edge := range s.edges {
+					if (edge.key.from == nodeID && edge.key.to == neighborID) ||
+						(edge.key.from == neighborID && edge.key.to == nodeID) {
+						portID := ""
+						if edge.key.from == neighborID {
+							portID = edge.sourcePort
+						} else {
+							portID = edge.targetPort
+						}
+						if portID != "" {
+							for _, port := range neighbor.ports {
+								if port.ID == portID {
+									portOffset = port.Offset
+									hasPort = true
+									break
+								}
+							}
+						}
+						break
+					}
+				}
+				if hasPort {
+					sum += (float64(neighbor.order) + portOffset/100.0)
+					weight += 1.0
+					changed = true
+				} else {
+					sum += float64(neighbor.order)
+					weight += 1.0
+				}
+			}
+
+			if weight > 0 {
+				barycenters[i] = portBarycenter{nodeID: nodeID, value: sum / weight, valid: true}
+			} else {
+				barycenters[i] = portBarycenter{nodeID: nodeID}
+			}
+		}
+
+		if !changed {
+			continue
+		}
+
+		// Re-sort the adjacent layer by port-adjusted barycenters
+		sort.SliceStable(barycenters, func(i, j int) bool {
+			if !barycenters[i].valid && !barycenters[j].valid {
+				return false
+			}
+			if !barycenters[i].valid {
+				return false
+			}
+			if !barycenters[j].valid {
+				return true
+			}
+			return barycenters[i].value < barycenters[j].value
+		})
+
+		for i, bc := range barycenters {
+			s.layers[adjRank][i] = bc.nodeID
+			s.nodes[bc.nodeID].order = i
+		}
+	}
 }

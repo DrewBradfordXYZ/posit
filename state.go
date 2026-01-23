@@ -1,5 +1,7 @@
 package posit
 
+import "math/rand"
+
 // edgeKey uniquely identifies an edge by its endpoints and optional ID.
 type edgeKey struct {
 	from string
@@ -99,6 +101,9 @@ type layoutState struct {
 	// Compound graph (clusters)
 	parents  map[string]string  // child -> parent cluster ID
 	clusters map[string]float64 // cluster ID -> padding
+
+	// Deterministic RNG for stochastic disturbance in adjacent exchange
+	rng *rand.Rand
 }
 
 // newLayoutState initializes internal state from a Graph.
@@ -111,6 +116,7 @@ func newLayoutState(g *Graph, opts Options) *layoutState {
 		predecessors: make(map[string][]string, len(g.nodes)),
 		parents:      g.parents,
 		clusters:     g.clusters,
+		rng:          rand.New(rand.NewSource(42)),
 	}
 
 	// Copy nodes

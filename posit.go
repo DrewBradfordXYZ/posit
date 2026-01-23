@@ -191,6 +191,12 @@ type Options struct {
 	// Set to a positive value to skip adjacent exchange for layers larger than this.
 	AdjacentExchangeLimit int
 
+	// TryReverseOrdering runs crossing minimization in both layer directions
+	// and keeps the better result. For asymmetric graphs, one direction may
+	// naturally produce fewer crossings. Roughly doubles ordering time.
+	// Default: false.
+	TryReverseOrdering bool
+
 	// RouteStyle selects the edge routing algorithm (default: RoutePolyline).
 	RouteStyle RouteStyle
 

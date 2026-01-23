@@ -11,31 +11,66 @@ func (s *layoutState) minimizeCrossings() {
 		return
 	}
 
-	// Initialize order within each layer
-	s.initOrder()
-
-	// Track best solution
+	// Run ordering in normal direction
+	s.runOrderingPass()
 	bestLayers := s.copyLayers()
 	bestCrossings := s.countCrossings()
 
-	// Iterate until no improvement
+	// Optionally try reversed layer direction and keep the better result
+	if s.opts.TryReverseOrdering && len(s.layers) > 2 {
+		// Reverse layer order
+		s.reverseLayerOrder()
+		s.assignOrderFromLayers()
+
+		// Re-run ordering from the reversed starting point
+		s.runOrderingPass()
+		revCrossings := s.countCrossings()
+
+		if revCrossings < bestCrossings {
+			// Reversed result is better — un-reverse the layers to restore correct rank order
+			s.reverseLayerOrder()
+			bestLayers = s.copyLayers()
+		} else {
+			// Original was better — restore it
+			s.layers = bestLayers
+		}
+		s.assignOrderFromLayers()
+	}
+
+	// Ensure cluster children are adjacent within layers
+	s.enforceClusterAdjacency()
+
+	// Port-level crossing minimization pass
+	s.minimizePortCrossings()
+}
+
+// reverseLayerOrder reverses the order of layers in-place.
+func (s *layoutState) reverseLayerOrder() {
+	for i, j := 0, len(s.layers)-1; i < j; i, j = i+1, j-1 {
+		s.layers[i], s.layers[j] = s.layers[j], s.layers[i]
+	}
+}
+
+// runOrderingPass executes one full ordering optimization (barycenter sweeps + adjacent exchange).
+func (s *layoutState) runOrderingPass() {
+	s.initOrder()
+
+	bestLayers := s.copyLayers()
+	bestCrossings := s.countCrossings()
+
 	maxIterations := 24
 	noImprovement := 0
 
 	for i := 0; i < maxIterations && noImprovement < 4; i++ {
-		// Alternate between sweeping down and up
 		if i%2 == 0 {
 			s.sweepDown()
 		} else {
 			s.sweepUp()
 		}
 
-		// Adjacent exchange: try swapping adjacent nodes to escape local minima
 		s.adjacentExchange()
 
-		// Count crossings
 		crossings := s.countCrossings()
-
 		if crossings < bestCrossings {
 			bestCrossings = crossings
 			bestLayers = s.copyLayers()
@@ -45,15 +80,8 @@ func (s *layoutState) minimizeCrossings() {
 		}
 	}
 
-	// Restore best solution
 	s.layers = bestLayers
 	s.assignOrderFromLayers()
-
-	// Ensure cluster children are adjacent within layers
-	s.enforceClusterAdjacency()
-
-	// Port-level crossing minimization pass
-	s.minimizePortCrossings()
 }
 
 // initOrder assigns initial order using the current layer positions,
@@ -197,118 +225,274 @@ func (s *layoutState) sweepUp() {
 	}
 }
 
-// adjacentExchange tries swapping each pair of adjacent nodes in each layer,
-// keeping the swap if it reduces edge crossings. Uses an incremental crossing
-// delta computation: O(deg(u) × deg(v)) per swap instead of O(E log V),
-// making it efficient for layers of any size.
+// adjacentExchange uses Iterated Local Search with bidirectional layer sweeps
+// to minimize crossings. Sweeps all layers forward then backward, allowing
+// improvements in one layer to create opportunities in adjacent layers.
+// Stops when a full forward+backward cycle produces no improvement.
 func (s *layoutState) adjacentExchange() {
-	limit := s.opts.AdjacentExchangeLimit
-	for rank := 0; rank < len(s.layers); rank++ {
-		layer := s.layers[rank]
-		if len(layer) <= 1 {
-			continue
-		}
-		if limit > 0 && len(layer) > limit {
-			continue
+	const maxCycles = 1 // forward+backward sweep cycles; outer loop (24×) provides additional opportunities
+
+	for cycle := 0; cycle < maxCycles; cycle++ {
+		progress := false
+
+		// Forward sweep
+		for rank := 0; rank < len(s.layers); rank++ {
+			if s.adjExchangeLayer(rank) {
+				progress = true
+			}
 		}
 
-		// Multiple passes until no improvement
-		for pass := 0; pass < 2; pass++ {
-			improved := false
-			for i := 0; i < len(layer)-1; i++ {
-				// Compute crossing delta: positive means swap reduces crossings
-				delta := s.swapCrossingDelta(rank, i)
+		// Backward sweep
+		for rank := len(s.layers) - 2; rank >= 0; rank-- {
+			if s.adjExchangeLayer(rank) {
+				progress = true
+			}
+		}
 
-				if delta > 0 {
-					// Swap is beneficial — keep it
-					layer[i], layer[i+1] = layer[i+1], layer[i]
-					s.nodes[layer[i]].order = i
-					s.nodes[layer[i+1]].order = i + 1
-					improved = true
-				}
-			}
-			if !improved {
-				break
-			}
+		if !progress {
+			break
 		}
 	}
 }
 
-// swapCrossingDelta computes the net crossing reduction from swapping
-// nodes at positions i and i+1 in the given layer. Returns positive
-// if the swap reduces crossings, negative if it increases them.
-// Complexity: O(deg(u) × deg(v)) — only considers edges incident to
-// the two nodes being swapped.
-func (s *layoutState) swapCrossingDelta(rank, i int) float64 {
+// adjExchangeLayer runs ILS on a single layer: greedy exchange until stable,
+// then stochastic disturbance to escape local minima. Tracks the best ordering
+// found and restores it at the end. Returns true if any improvement was made.
+func (s *layoutState) adjExchangeLayer(rank int) bool {
+	limit := s.opts.AdjacentExchangeLimit
+	const maxPasses = 3
+	const maxNoImprovement = 2
+
+	layer := s.layers[rank]
+	if len(layer) <= 1 {
+		return false
+	}
+	if limit > 0 && len(layer) > limit {
+		return false
+	}
+
+	// Build neighbor cache once — valid for all passes since neighbors
+	// are in adjacent layers and their positions don't change.
+	cache := s.buildNeighborCache(rank)
+
+	bestOrder := make([]string, len(layer))
+	copy(bestOrder, layer)
+	bestCrossings := s.layerCrossings(rank)
+	improved := false
+	noImprovement := 0
+
+	for pass := 0; pass < maxPasses && noImprovement < maxNoImprovement; pass++ {
+		gained := s.greedyExchangeWithCache(rank, cache)
+
+		if !gained {
+			// Perturbation: randomly accept gain=0 swaps to explore new neighborhoods
+			s.disturbLayerWithCache(rank, cache)
+			gained = s.greedyExchangeWithCache(rank, cache)
+		}
+
+		// Track best solution found
+		currentCrossings := s.layerCrossings(rank)
+		if currentCrossings < bestCrossings {
+			copy(bestOrder, layer)
+			bestCrossings = currentCrossings
+			noImprovement = 0
+			improved = true
+		} else {
+			noImprovement++
+		}
+	}
+
+	// Restore best ordering found
+	copy(layer, bestOrder)
+	for i, id := range layer {
+		s.nodes[id].order = i
+	}
+	return improved
+}
+
+// neighborCache holds precomputed sorted neighbor positions for all nodes
+// in a layer. Since neighbors are in adjacent layers, their positions don't
+// change when we swap nodes within the current layer — so the cache stays
+// valid for an entire exchange pass.
+type neighborCache struct {
+	preds map[string][]neighborPos
+	succs map[string][]neighborPos
+}
+
+// buildNeighborCache precomputes sorted neighbor positions for all nodes in a layer.
+func (s *layoutState) buildNeighborCache(rank int) *neighborCache {
+	layer := s.layers[rank]
+	cache := &neighborCache{
+		preds: make(map[string][]neighborPos, len(layer)),
+		succs: make(map[string][]neighborPos, len(layer)),
+	}
+	for _, id := range layer {
+		if rank > 0 {
+			cache.preds[id] = s.sortedNeighborPositions(id, true)
+		}
+		if rank < len(s.layers)-1 {
+			cache.succs[id] = s.sortedNeighborPositions(id, false)
+		}
+	}
+	return cache
+}
+
+// swapCrossingDeltaCached computes crossing delta using precomputed neighbor positions.
+func (s *layoutState) swapCrossingDeltaCached(rank, i int, cache *neighborCache) float64 {
 	u := s.layers[rank][i]
 	v := s.layers[rank][i+1]
 
 	delta := 0.0
 
 	// Check crossings with layer above (predecessors)
-	if rank > 0 {
-		delta += s.pairCrossingDelta(u, v, true)
+	if uPreds, vPreds := cache.preds[u], cache.preds[v]; len(uPreds) > 0 && len(vPreds) > 0 {
+		delta += countInversions(uPreds, vPreds) - countInversions(vPreds, uPreds)
 	}
 
 	// Check crossings with layer below (successors)
-	if rank < len(s.layers)-1 {
-		delta += s.pairCrossingDelta(u, v, false)
+	if uSuccs, vSuccs := cache.succs[u], cache.succs[v]; len(uSuccs) > 0 && len(vSuccs) > 0 {
+		delta += countInversions(uSuccs, vSuccs) - countInversions(vSuccs, uSuccs)
 	}
 
 	return delta
 }
 
-// pairCrossingDelta computes crossing delta between edges of u and v
-// to/from an adjacent layer. When usePredecessors is true, checks the
-// layer above; otherwise checks the layer below.
-//
-// With u at position i and v at position i+1:
-//   - Edges cross when their other endpoints are in opposite order
-//   - Before swap: u-edge and v-edge cross when neighbor_u.order > neighbor_v.order
-//   - After swap: they cross when neighbor_u.order < neighbor_v.order
-//   - Delta = crossings_before - crossings_after (positive = improvement)
-func (s *layoutState) pairCrossingDelta(u, v string, usePredecessors bool) float64 {
-	var uNeighbors, vNeighbors []string
+// greedyExchangeWithCache uses first-improvement with propagation: finds the
+// first beneficial swap, then propagates left and right to exploit the new
+// neighborhood. Repeats until no beneficial swaps remain or the maximum
+// number of rounds is reached.
+func (s *layoutState) greedyExchangeWithCache(rank int, cache *neighborCache) bool {
+	layer := s.layers[rank]
+	anyImproved := false
+	maxRounds := len(layer)
+	if maxRounds > 5 {
+		maxRounds = 5
+	}
+
+	const maxPropagation = 5 // max positions to propagate in each direction
+
+	for round := 0; round < maxRounds; round++ {
+		found := false
+		for i := 0; i < len(layer)-1; i++ {
+			delta := s.swapCrossingDeltaCached(rank, i, cache)
+			if delta > 0 {
+				layer[i], layer[i+1] = layer[i+1], layer[i]
+				s.nodes[layer[i]].order = i
+				s.nodes[layer[i+1]].order = i + 1
+
+				// Propagate left: the node that moved left may benefit from moving further
+				leftBound := i - maxPropagation
+				if leftBound < 0 {
+					leftBound = 0
+				}
+				for j := i - 1; j >= leftBound; j-- {
+					d := s.swapCrossingDeltaCached(rank, j, cache)
+					if d <= 0 {
+						break
+					}
+					layer[j], layer[j+1] = layer[j+1], layer[j]
+					s.nodes[layer[j]].order = j
+					s.nodes[layer[j+1]].order = j + 1
+				}
+
+				// Propagate right: the node that moved right may benefit from moving further
+				rightBound := i + 1 + maxPropagation
+				if rightBound > len(layer)-1 {
+					rightBound = len(layer) - 1
+				}
+				for j := i + 1; j < rightBound; j++ {
+					d := s.swapCrossingDeltaCached(rank, j, cache)
+					if d <= 0 {
+						break
+					}
+					layer[j], layer[j+1] = layer[j+1], layer[j]
+					s.nodes[layer[j]].order = j
+					s.nodes[layer[j+1]].order = j + 1
+				}
+
+				found = true
+				anyImproved = true
+				break // first-improvement: restart scan after propagation
+			}
+		}
+		if !found {
+			break
+		}
+	}
+	return anyImproved
+}
+
+// disturbLayerWithCache randomly perturbs the ordering by accepting swaps with
+// gain >= 0. Swaps with gain > 0 are always accepted; swaps with gain == 0
+// are accepted with 50% probability. This is an O(n) perturbation that moves
+// the solution to a new neighborhood without degrading quality significantly.
+func (s *layoutState) disturbLayerWithCache(rank int, cache *neighborCache) {
+	layer := s.layers[rank]
+	for i := 0; i < len(layer)-1; i++ {
+		delta := s.swapCrossingDeltaCached(rank, i, cache)
+		if delta > 0 || (delta == 0 && s.rng.Intn(2) == 0) {
+			layer[i], layer[i+1] = layer[i+1], layer[i]
+			s.nodes[layer[i]].order = i
+			s.nodes[layer[i+1]].order = i + 1
+		}
+	}
+}
+
+// neighborPos holds a neighbor's position and the weight of the edge to it.
+type neighborPos struct {
+	pos    int
+	weight float64
+}
+
+// sortedNeighborPositions returns the positions and edge weights of a node's
+// neighbors in an adjacent layer, sorted by position ascending.
+func (s *layoutState) sortedNeighborPositions(nodeID string, usePredecessors bool) []neighborPos {
+	var neighbors []string
 	if usePredecessors {
-		uNeighbors = s.predecessors[u]
-		vNeighbors = s.predecessors[v]
+		neighbors = s.predecessors[nodeID]
 	} else {
-		uNeighbors = s.successors[u]
-		vNeighbors = s.successors[v]
+		neighbors = s.successors[nodeID]
 	}
 
-	if len(uNeighbors) == 0 || len(vNeighbors) == 0 {
-		return 0
+	if len(neighbors) == 0 {
+		return nil
 	}
 
-	before := 0.0 // crossings with u first (current)
-	after := 0.0  // crossings with v first (after swap)
-
-	for _, nu := range uNeighbors {
-		nuNode := s.nodes[nu]
-		if nuNode == nil {
+	positions := make([]neighborPos, 0, len(neighbors))
+	for _, nID := range neighbors {
+		n := s.nodes[nID]
+		if n == nil {
 			continue
 		}
-		wU := s.edgeWeightBetween(u, nu)
-
-		for _, nv := range vNeighbors {
-			nvNode := s.nodes[nv]
-			if nvNode == nil {
-				continue
-			}
-			wV := s.edgeWeightBetween(v, nv)
-			w := wU * wV
-
-			if nuNode.order > nvNode.order {
-				before += w
-			} else if nuNode.order < nvNode.order {
-				after += w
-			}
-			// Equal positions: no crossing in either order
-		}
+		w := s.edgeWeightBetween(nodeID, nID)
+		positions = append(positions, neighborPos{pos: n.order, weight: w})
 	}
 
-	return before - after
+	sort.Slice(positions, func(i, j int) bool {
+		return positions[i].pos < positions[j].pos
+	})
+
+	return positions
+}
+
+// countInversions counts weighted pairs where an element of `a` has a position
+// greater than an element of `b`. Both slices must be sorted by pos ascending.
+// This is O(len(a) + len(b)) via a merge scan.
+func countInversions(a, b []neighborPos) float64 {
+	count := 0.0
+	j := 0
+	bWeightSoFar := 0.0 // cumulative weight of b elements with pos < current a[i].pos
+
+	for i := 0; i < len(a); i++ {
+		// Advance j past all b elements with position < a[i].pos
+		for j < len(b) && b[j].pos < a[i].pos {
+			bWeightSoFar += b[j].weight
+			j++
+		}
+		// Each b element with pos < a[i].pos is an inversion (a > b)
+		count += a[i].weight * bWeightSoFar
+	}
+	return count
 }
 
 // edgeWeightBetween returns the weight of the edge between two nodes.
@@ -326,6 +510,19 @@ func (s *layoutState) edgeWeightBetween(a, b string) float64 {
 		return 1
 	}
 	return 1
+}
+
+// layerCrossings counts crossings involving the given rank
+// (between it and both adjacent layers).
+func (s *layoutState) layerCrossings(rank int) float64 {
+	total := 0.0
+	if rank > 0 {
+		total += s.twoLayerCrossCount(s.layers[rank-1], s.layers[rank])
+	}
+	if rank < len(s.layers)-1 {
+		total += s.twoLayerCrossCount(s.layers[rank], s.layers[rank+1])
+	}
+	return total
 }
 
 // barycenterEntry holds barycenter data for sorting.

@@ -1,6 +1,18 @@
 # Posit Roadmap
 
-Planned improvements to Posit as a general-purpose layered graph layout library. These are standard graph layout concepts that benefit any consumer — schema diagrams, dependency graphs, org charts, state machines, etc.
+Planned improvements to Posit as a general-purpose layered graph layout library.
+
+## Design Advantage
+
+Posit runs as a single computation over the entire graph. Unlike client-side renderers that process each edge independently, Posit sees **all nodes and all edges simultaneously**. This global knowledge enables optimizations that per-edge rendering cannot achieve:
+
+- **Edge routing that avoids nodes** — knows where every node is
+- **Edge spacing that prevents overlaps** — knows where every other edge is
+- **Port positions resolved to coordinates** — knows node dimensions and field order
+- **Optimal attachment sides** — knows relative positions of all connected nodes
+- **Crossing-aware channel assignment** — knows the full routing topology
+
+Each improvement below leverages this global knowledge. The library computes what requires seeing the full picture; consumers handle aesthetics (curve rendering, colors, interaction).
 
 ## Current Capabilities
 
@@ -219,47 +231,49 @@ When ports are specified, the port's `Side` field takes precedence over inferred
 
 ### Concept
 
-Orthogonal (Manhattan) routing produces edges with only horizontal and vertical segments. This is the expected style for ER diagrams, circuit schematics, and UML diagrams. Current polyline routing produces arbitrary-angle segments through dummy node positions.
+Orthogonal routing assigns edges to horizontal and vertical channels between node columns/rows. The primary value is not aesthetic ("right angles look cleaner") — it's algorithmic:
 
-### Use Cases
+- **Edge-edge overlap prevention** — edges in the same channel are spaced apart (requires knowing all edges)
+- **Node avoidance** — edges route around intermediate nodes (requires knowing all node positions)
+- **Bend minimization** — choose paths with fewest turns (requires global path optimization)
 
-- Database/ER diagrams (the canonical use case)
-- Circuit diagrams
-- UML class diagrams
-- Any domain where "clean right angles" is the visual standard
+A client rendering edges independently cannot achieve this. It doesn't know what other edges exist or where intermediate nodes are. This is a global optimization that leverages Posit's full-graph knowledge.
 
-### Approach
-
-Route edges using horizontal and vertical channel segments:
+### API Design
 
 ```go
 type RouteStyle int
 
 const (
     RoutePolyline   RouteStyle = iota // Current behavior (default)
-    RouteOrthogonal                   // Manhattan routing
+    RouteOrthogonal                   // Channel-routed H/V segments
 )
 
 type Options struct {
     // ... existing options ...
-    RouteStyle RouteStyle
+    RouteStyle  RouteStyle
+    ChannelGap  float64 // Spacing between parallel edges in a channel (default: 10)
 }
 ```
 
-Implementation strategy:
+`RouteStyle` is an algorithm choice (like `Algorithm: NetworkSimplex`), not an aesthetic opinion. Both options produce waypoints; the consumer renders them however they want (straight lines, curves, smoothstep).
+
+### Implementation Strategy
+
 1. Determine exit direction from source port/side
-2. Route horizontally to a channel column (between node columns)
-3. Route vertically through the channel to the target layer
-4. Route horizontally to the target port/side
+2. Assign each edge to a routing channel (vertical corridor between node columns)
+3. Space edges within the same channel using `ChannelGap`
+4. Route: horizontal → channel → vertical → channel → horizontal to target
+5. Minimize bends by choosing the shortest-path channel assignment
 
 ### Complexity
 
-True orthogonal routing with bend minimization and crossover avoidance (Tamassia's algorithm) is a significant algorithm. A simpler approach:
-- Use dummy node X positions as channel columns
-- Route edges through these channels with horizontal/vertical segments only
-- Add edge spacing within channels to prevent overlaps
+Full Tamassia-style bend minimization is a significant algorithm. A pragmatic approach:
+- Use dummy node X positions as initial channel columns
+- Assign edges to channels with offset spacing to prevent overlaps
+- Route around nodes that fall within the channel
 
-The simple approach produces acceptable results for most graphs. Full Tamassia-style routing is a future optimization.
+This produces good results for most graphs. The channel assignment is the key server-side advantage — it requires seeing all edges simultaneously.
 
 ---
 
@@ -498,22 +512,24 @@ This requires changes to every phase of the algorithm — cycle removal, ranking
 
 ## Implementation Order
 
-| Priority | Improvement | Effort | Dependencies |
-|----------|-------------|--------|--------------|
-| 1 | Rank constraints | Low | None |
-| 2 | Port support | Medium | None |
-| 3 | Side inference | Low | None (enhanced by ports) |
-| 4 | Edge weight API | Low | None |
-| 5 | Orthogonal routing | Medium-High | Ports (for full value) |
-| 6 | Multi-edge support | Low-Medium | None |
-| 7 | Ordering constraints | Low | None |
-| 8 | Port crossing minimization | Medium | Ports |
-| 9 | Disconnected component packing | Low | None |
-| 10 | Incremental layout | High | None |
-| 11 | Compound graphs | Very High | Architecture change |
+| Priority | Improvement | Effort | Leverages | Dependencies |
+|----------|-------------|--------|-----------|--------------|
+| 1 | Rank constraints | Low | Topology | None |
+| 2 | Port support | Medium | Node dimensions | None |
+| 3 | Side inference | Low | All node positions | None (enhanced by ports) |
+| 4 | Edge weight API | Low | Topology | None |
+| 5 | Orthogonal routing | Medium-High | All nodes + all edges | Ports (for full value) |
+| 6 | Multi-edge support | Low-Medium | All edges (parallel detection) | None |
+| 7 | Ordering constraints | Low | Layer structure | None |
+| 8 | Port crossing minimization | Medium | All edges + port positions | Ports |
+| 9 | Disconnected component packing | Low | All components | None |
+| 10 | Incremental layout | High | Previous layout + changes | None |
+| 11 | Compound graphs | Very High | Full topology + grouping | Architecture change |
 
-**First tier (high value, low effort):** Rank constraints, side inference, edge weight API, ordering constraints. These are small additions to existing phases.
+**Leverages column:** What global knowledge each feature uses that a per-edge client renderer cannot access.
 
-**Second tier (high value, medium effort):** Port support, multi-edge, orthogonal routing. These add new capabilities to Phase 6 (edge routing).
+**First tier (high value, low effort):** Rank constraints, side inference, edge weight API, ordering constraints. Small additions to existing phases.
+
+**Second tier (high value, medium effort):** Port support, multi-edge, orthogonal routing. New capabilities in Phase 6 (edge routing). Orthogonal routing is the highest-leverage server-side feature — it requires seeing all nodes and all edges simultaneously.
 
 **Third tier (deferred):** Incremental layout and compound graphs require significant architectural additions.

@@ -1059,8 +1059,9 @@ func (s *layoutState) resolveEdgeLabelCollisions() {
 }
 
 // restoreSelfLoops generates curved paths for self-referential edges.
-// Self-loops are rendered as a curved path that exits the right side of
-// the node, goes up and around, and re-enters from the right.
+// Self-loops exit and re-enter from the right side of the node.
+// When ports are specified, the start/end points align with port Y offsets.
+// Interior waypoints extend rightward to form a visible loop arc.
 func (s *layoutState) restoreSelfLoops() {
 	for _, edge := range s.selfLoops {
 		node := s.nodes[edge.key.from]
@@ -1068,29 +1069,46 @@ func (s *layoutState) restoreSelfLoops() {
 			continue
 		}
 
-		// Calculate loop dimensions based on node size and separation
-		loopOffset := s.opts.NodeSep * 0.75
-		loopHeight := node.height * 0.5
-
-		// Node center and bounds
-		cx := node.x + node.width/2
-		cy := node.y + node.height/2
 		right := node.x + node.width
-		top := node.y
-
-		// Generate a 5-point curved path:
-		// 1. Exit point (right side of node, upper half)
-		// 2. Control point out (to the right)
-		// 3. Top of loop (above node)
-		// 4. Control point back (to the right)
-		// 5. Entry point (right side of node, lower half)
-		edge.points = []EdgePoint{
-			{X: right, Y: cy - loopHeight/3},            // Exit upper right
-			{X: right + loopOffset, Y: cy - loopHeight}, // Control right-up
-			{X: cx, Y: top - loopOffset},                // Top of loop
-			{X: right + loopOffset, Y: cy + loopHeight}, // Control right-down
-			{X: right, Y: cy + loopHeight/3},            // Entry lower right
+		loopOffset := s.opts.NodeSep * 0.6
+		if loopOffset < 40 {
+			loopOffset = 40
 		}
+
+		// Resolve start/end Y from port offsets directly (bypass getPortPosition
+		// since PortFixedOffset ports don't have Side pre-set; we know it's Right)
+		var startY, endY float64
+		startY = node.y + node.height/3 // default
+		if edge.sourcePort != "" {
+			for _, p := range node.ports {
+				if p.ID == edge.sourcePort {
+					startY = node.y + p.Offset
+					break
+				}
+			}
+		}
+
+		endY = node.y + node.height*2/3 // default
+		if edge.targetPort != "" {
+			for _, p := range node.ports {
+				if p.ID == edge.targetPort {
+					endY = node.y + p.Offset
+					break
+				}
+			}
+		}
+
+		// Generate loop path: start, two waypoints extending right, end
+		edge.points = []EdgePoint{
+			{X: right, Y: startY},              // Start: right side at source port
+			{X: right + loopOffset, Y: startY}, // Extend right from source
+			{X: right + loopOffset, Y: endY},   // Extend right at target level
+			{X: right, Y: endY},                // End: right side at target port
+		}
+
+		// Set sides (in internal space - Right for TopToBottom layout)
+		edge.sourceSide = Right
+		edge.targetSide = Right
 
 		// Add back to edges map
 		s.edges[edge.key] = edge

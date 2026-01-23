@@ -2,12 +2,92 @@
 
 Planned improvements to Posit as a general-purpose layered graph layout library. These are standard graph layout concepts that benefit any consumer — schema diagrams, dependency graphs, org charts, state machines, etc.
 
+## Current Capabilities
+
+Posit implements the core Sugiyama framework:
+
+- **Cycle removal:** DFS-based and Greedy FAS (Eades/Lin/Smyth)
+- **Ranking:** LongestPath, TightTree, NetworkSimplex
+- **Crossing minimization:** Barycenter heuristic with layer sweeps
+- **Coordinate assignment:** Brandes-Köpf (optimal) with simple fallback for large graphs
+- **Edge routing:** Polyline paths through dummy nodes with boundary intersection
+- **Directions:** TopToBottom, LeftToRight, BottomToTop, RightToLeft
+- **Edge labels:** Automatic positioning via label dummy nodes
+- **Self-loops:** Curved path rendering
+- **Duplicate edges:** Weight aggregation
+- **Disconnected components:** Handled correctly in all phases (no overlaps)
+
+## Non-Goals
+
+Posit is a layered (Sugiyama) layout library. The following are out of scope:
+
+- Force-directed / spring-embedded layouts
+- Radial or circular layouts
+- Treemaps or space-filling layouts
+- 3D layout
+- Interactive/animated layout (consumers handle this)
+- Graph editing or manipulation beyond layout
+- Rendering (SVG, Canvas, HTML) — consumers choose their rendering stack
+- Spline/bézier curve generation — consumers post-process polyline points into curves as needed for their rendering library
+
 ---
 
-## 1. Port Support
+## 1. Rank Constraints
+
+**Priority:** Very High
+**Effort:** Low
+
+### Concept
+
+Allow consumers to constrain which layer a node is assigned to. This is one of the most commonly needed features in layered graph layout (dagre's `rank: "min"`, `rank: "max"`, `rank: "same"`).
+
+### Use Cases
+
+- Force all "input" nodes to the top layer
+- Force all "output" nodes to the bottom layer
+- Keep related nodes on the same layer regardless of edge structure
+- Pin a specific node to a rank for visual anchoring
+
+### API Design
+
+```go
+type RankConstraint int
+
+const (
+    RankUnconstrained RankConstraint = iota
+    RankMin  // Force to first (top) layer
+    RankMax  // Force to last (bottom) layer
+)
+
+type NodeOptions struct {
+    Width          float64
+    Height         float64
+    RankConstraint RankConstraint // Pin to min/max layer
+    RankGroup      string         // Nodes with same group share a layer
+}
+```
+
+### Implementation
+
+Rank constraints modify the rank assignment phase:
+
+```go
+func (s *layoutState) applyRankConstraints() {
+    // 1. Nodes with RankMin get rank 0
+    // 2. Nodes with RankMax get the maximum rank
+    // 3. Nodes in the same RankGroup are assigned the same rank
+    //    (use the maximum rank among group members to satisfy edge constraints)
+}
+```
+
+This runs after initial rank assignment and before normalization. For NetworkSimplex, constraints are encoded as zero-length edges between group members.
+
+---
+
+## 2. Port Support
 
 **Priority:** High
-**Status:** Planned
+**Effort:** Medium
 
 ### Concept
 
@@ -94,40 +174,10 @@ Consumers receive fully-resolved positions — no client-side inference needed.
 
 ---
 
-## 2. Port-Level Crossing Minimization
-
-**Priority:** Medium
-**Depends on:** Port Support
-
-### Concept
-
-When a node has multiple ports on the same side, edges connecting to those ports may cross unnecessarily. Standard crossing minimization operates on nodes; this extends it to consider port ordering within a node.
-
-### Approach
-
-After the standard barycenter node ordering (Phase 4), run an additional pass that considers port positions as sub-ordering weights:
-
-```go
-func (s *layoutState) minimizePortCrossings() {
-    for _, node := range s.nodes {
-        if len(node.ports) <= 1 {
-            continue
-        }
-        // For edges connecting to ports on the same side,
-        // check if reordering reduces crossings
-        // Use port Y positions as weights in barycenter calculation
-    }
-}
-```
-
-Alternatively, port positions influence the barycenter calculation so nodes with connected ports at similar offsets are placed near each other.
-
----
-
 ## 3. Edge Attachment Side Inference
 
 **Priority:** Medium
-**Depends on:** Port Support (optional, works without ports too)
+**Effort:** Low
 
 ### Concept
 
@@ -161,9 +211,174 @@ When ports are specified, the port's `Side` field takes precedence over inferred
 
 ---
 
-## 4. Edge Weight in Public API
+## 4. Orthogonal Edge Routing
+
+**Priority:** High
+**Effort:** Medium-High
+**Depends on:** Port Support (for full value)
+
+### Concept
+
+Orthogonal (Manhattan) routing produces edges with only horizontal and vertical segments. This is the expected style for ER diagrams, circuit schematics, and UML diagrams. Current polyline routing produces arbitrary-angle segments through dummy node positions.
+
+### Use Cases
+
+- Database/ER diagrams (the canonical use case)
+- Circuit diagrams
+- UML class diagrams
+- Any domain where "clean right angles" is the visual standard
+
+### Approach
+
+Route edges using horizontal and vertical channel segments:
+
+```go
+type RouteStyle int
+
+const (
+    RoutePolyline   RouteStyle = iota // Current behavior (default)
+    RouteOrthogonal                   // Manhattan routing
+)
+
+type Options struct {
+    // ... existing options ...
+    RouteStyle RouteStyle
+}
+```
+
+Implementation strategy:
+1. Determine exit direction from source port/side
+2. Route horizontally to a channel column (between node columns)
+3. Route vertically through the channel to the target layer
+4. Route horizontally to the target port/side
+
+### Complexity
+
+True orthogonal routing with bend minimization and crossover avoidance (Tamassia's algorithm) is a significant algorithm. A simpler approach:
+- Use dummy node X positions as channel columns
+- Route edges through these channels with horizontal/vertical segments only
+- Add edge spacing within channels to prevent overlaps
+
+The simple approach produces acceptable results for most graphs. Full Tamassia-style routing is a future optimization.
+
+---
+
+## 5. Multi-Edge Support
+
+**Priority:** Medium
+**Effort:** Low-Medium
+
+### Concept
+
+Currently Posit aggregates duplicate edges between the same node pair (summing weights). State machines, protocol diagrams, and multi-relationship schemas need multiple distinct edges rendered as separate paths with slight offsets.
+
+### API Design
+
+```go
+type EdgeOptions struct {
+    // ... existing options ...
+    ID string // Optional: distinguish multiple edges between same nodes
+}
+
+// Multiple edges between same pair
+g.AddEdge("A", "B", posit.EdgeOptions{ID: "transition-1", LabelWidth: 60, LabelHeight: 20})
+g.AddEdge("A", "B", posit.EdgeOptions{ID: "transition-2", LabelWidth: 60, LabelHeight: 20})
+```
+
+### Rendering
+
+Parallel edges are offset perpendicular to their direction:
+
+```go
+const parallelEdgeSpacing = 10.0
+
+func (s *layoutState) offsetParallelEdges() {
+    // Group edges by (from, to) pair
+    // For each group with n > 1 edges:
+    //   Offset each edge by (i - (n-1)/2) * parallelEdgeSpacing
+    //   perpendicular to the edge direction
+}
+```
+
+### Output
+
+Edge keys become `"from->to:id"` when ID is specified, otherwise `"from->to"` (backward compatible).
+
+---
+
+## 6. Ordering Constraints
+
+**Priority:** Medium
+**Effort:** Low
+
+### Concept
+
+Force specific nodes to appear in a given order within their layer, regardless of what barycenter ordering would produce. This is simpler than compound graphs but achieves similar visual grouping.
+
+### API Design
+
+```go
+type NodeOptions struct {
+    // ... existing options ...
+    OrderGroup    string // Nodes in same group are placed adjacently
+    OrderPriority int    // Within a group, lower priority = further left
+}
+```
+
+### Implementation
+
+Add constraints to the barycenter sort in Phase 4:
+
+```go
+func (s *layoutState) orderLayerWithConstraints(layer []string) {
+    // 1. Compute barycenters as normal
+    // 2. Sort by: (OrderGroup, OrderPriority, barycenter)
+    // Nodes in the same group cluster together,
+    // ordered by priority within the group
+}
+```
+
+### Use Cases
+
+- Keep related tables adjacent without full cluster support
+- Logical grouping in dependency graphs ("all auth nodes together")
+- Force specific left-to-right ordering for readability
+
+---
+
+## 7. Port-Level Crossing Minimization
+
+**Priority:** Medium
+**Effort:** Medium
+**Depends on:** Port Support
+
+### Concept
+
+When a node has multiple ports on the same side, edges connecting to those ports may cross unnecessarily. Standard crossing minimization operates on nodes; this extends it to consider port ordering within a node.
+
+### Approach
+
+After the standard barycenter node ordering (Phase 4), run an additional pass that considers port positions as sub-ordering weights:
+
+```go
+func (s *layoutState) minimizePortCrossings() {
+    for _, node := range s.nodes {
+        if len(node.ports) <= 1 {
+            continue
+        }
+        // For edges connecting to ports on the same side,
+        // use port offsets as weights in the barycenter calculation
+        // so connected nodes are placed at heights matching port positions
+    }
+}
+```
+
+---
+
+## 8. Edge Weight in Public API
 
 **Priority:** Low
+**Effort:** Low
 
 ### Concept
 
@@ -188,7 +403,35 @@ type EdgeOptions struct {
 
 ---
 
-## 5. Incremental Layout
+## 9. Disconnected Component Packing
+
+**Priority:** Low
+**Effort:** Low
+
+### Concept
+
+Posit already handles disconnected components correctly (no overlaps, valid positions in all phases). However, the arrangement strategy is implicit. Adding an explicit packing option gives consumers control over how separate components are positioned relative to each other.
+
+### API Design
+
+```go
+type ComponentPacking int
+
+const (
+    PackHorizontal ComponentPacking = iota // Side by side (default)
+    PackVertical                           // Stacked
+)
+
+type Options struct {
+    // ... existing options ...
+    ComponentPacking ComponentPacking
+    ComponentGap     float64 // Spacing between components (default: NodeSep * 2)
+}
+```
+
+---
+
+## 10. Incremental Layout
 
 **Priority:** Medium
 **Effort:** High
@@ -197,16 +440,12 @@ type EdgeOptions struct {
 
 Given an existing layout and a set of changed nodes (e.g., one node changed height), produce a minimal adjustment that preserves the mental map. Nodes far from the change shouldn't move.
 
-This is listed in ARCHITECTURE.md as a planned enhancement.
-
 ### API Design
 
 ```go
 type IncrementalOptions struct {
-    // Nodes that should not move (or move minimally)
-    Fixed map[string]bool
-    // Nodes with new dimensions
-    Changes map[string]NodeOptions
+    Fixed   map[string]bool       // Nodes that should not move
+    Changes map[string]NodeOptions // Nodes with new dimensions
 }
 
 func (g *Graph) IncrementalLayout(base *Layout, changes IncrementalOptions) *Layout {
@@ -224,14 +463,14 @@ The simple version preserves layer assignment and X positions, only adjusting Y 
 
 ---
 
-## 6. Compound Graphs (Clusters)
+## 11. Compound Graphs (Clusters)
 
 **Priority:** Low
 **Effort:** Very High
 
 ### Concept
 
-Compound graphs allow nodes to contain other nodes (subgraphs/clusters). Clusters are laid out as atomic units first, then internal nodes are positioned within. This is listed in ARCHITECTURE.md as a known limitation.
+Compound graphs allow nodes to contain other nodes (subgraphs/clusters). Clusters are laid out as atomic units first, then internal nodes are positioned within.
 
 ### API Design
 
@@ -259,13 +498,22 @@ This requires changes to every phase of the algorithm — cycle removal, ranking
 
 ## Implementation Order
 
-| # | Improvement | Effort | Dependencies |
-|---|-------------|--------|--------------|
-| 1 | Port support | Medium | None |
+| Priority | Improvement | Effort | Dependencies |
+|----------|-------------|--------|--------------|
+| 1 | Rank constraints | Low | None |
+| 2 | Port support | Medium | None |
 | 3 | Side inference | Low | None (enhanced by ports) |
 | 4 | Edge weight API | Low | None |
-| 2 | Port crossing minimization | Medium | Port support |
-| 5 | Incremental layout | High | None |
-| 6 | Compound graphs | Very High | Architecture change |
+| 5 | Orthogonal routing | Medium-High | Ports (for full value) |
+| 6 | Multi-edge support | Low-Medium | None |
+| 7 | Ordering constraints | Low | None |
+| 8 | Port crossing minimization | Medium | Ports |
+| 9 | Disconnected component packing | Low | None |
+| 10 | Incremental layout | High | None |
+| 11 | Compound graphs | Very High | Architecture change |
 
-Ports and side inference are the foundational additions. They provide consumers with fully-resolved edge endpoints, eliminating the most common reason for client-side position computation.
+**First tier (high value, low effort):** Rank constraints, side inference, edge weight API, ordering constraints. These are small additions to existing phases.
+
+**Second tier (high value, medium effort):** Port support, multi-edge, orthogonal routing. These add new capabilities to Phase 6 (edge routing).
+
+**Third tier (deferred):** Incremental layout and compound graphs require significant architectural additions.

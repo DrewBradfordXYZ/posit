@@ -1,0 +1,37 @@
+version: '3'
+
+tasks:
+  test:
+    desc: Run all tests (short mode)
+    cmds:
+      - go test -short ./...
+
+  test:full:
+    desc: Run all tests including stress tests
+    cmds:
+      - go test -timeout 60s ./...
+
+  bench:
+    desc: Run benchmark report (timing, crossings, area)
+    cmds:
+      - go test -run TestBenchmarkReport -v -timeout 120s
+
+  bench:save:
+    desc: Run benchmark and save baseline
+    cmds:
+      - go test -run TestBenchmarkReport -v -timeout 120s -bench-save
+
+  stress:
+    desc: Run stress tests only
+    cmds:
+      - go test -run TestStress -v -timeout 60s
+
+  lint:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  build:
+    desc: Verify the package builds
+    cmds:
+      - go build ./...

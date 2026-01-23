@@ -924,6 +924,76 @@ func TestPortFixedOffset_MixedWithFree(t *testing.T) {
 	}
 }
 
+func TestPortFixedOffset_PerEdgeSide(t *testing.T) {
+	// A hub node with a PortFixedOffset port connected to nodes on BOTH sides.
+	// The per-edge side should face each individual target, not the averaged direction.
+	//
+	// Layout (LeftToRight):
+	//   Left → Hub → Right
+	//
+	// Hub's port-3 is used as BOTH target (from Left) and source (to Right).
+	// The target side should face Left, source side should face Right.
+	g := NewGraph()
+	g.AddNode("Left", NodeOptions{Width: 100, Height: 60})
+	g.AddNode("Hub", NodeOptions{
+		Width: 200, Height: 100,
+		Ports: []PortOptions{
+			{ID: "port-3", Offset: 44, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+		},
+	})
+	g.AddNode("Right", NodeOptions{Width: 100, Height: 60})
+
+	// Left → Hub (Hub's port-3 is target)
+	g.MustAddEdge("Left", "Hub", EdgeOptions{TargetPort: "port-3", ID: "from-left"})
+	// Hub → Right (Hub's port-3 is source)
+	g.MustAddEdge("Hub", "Right", EdgeOptions{SourcePort: "port-3", ID: "to-right"})
+
+	layout := g.Layout(Options{
+		Direction: LeftToRight,
+		NodeSep:   50,
+		RankSep:   150,
+	})
+
+	hubX := layout.Nodes["Hub"].X + layout.Nodes["Hub"].Width/2
+	leftX := layout.Nodes["Left"].X + layout.Nodes["Left"].Width/2
+	rightX := layout.Nodes["Right"].X + layout.Nodes["Right"].Width/2
+
+	// Verify layout order: Left < Hub < Right
+	if leftX >= hubX {
+		t.Fatalf("Left not left of Hub (leftX=%v, hubX=%v)", leftX, hubX)
+	}
+	if rightX <= hubX {
+		t.Fatalf("Right not right of Hub (rightX=%v, hubX=%v)", rightX, hubX)
+	}
+
+	// Edge from Left → Hub: Hub's port-3 should receive on Left side
+	edgeFromLeft, ok := layout.Edge("Left", "Hub")
+	if !ok {
+		t.Fatal("Edge Left->Hub not found")
+	}
+	if edgeFromLeft.TargetSide != Left {
+		t.Errorf("Edge from Left: expected TargetSide=Left (facing Left node), got %v", edgeFromLeft.TargetSide)
+	}
+
+	// Edge from Hub → Right: Hub's port-3 should exit on Right side
+	edgeToRight, ok := layout.Edge("Hub", "Right")
+	if !ok {
+		t.Fatal("Edge Hub->Right not found")
+	}
+	if edgeToRight.SourceSide != Right {
+		t.Errorf("Edge to Right: expected SourceSide=Right (facing Right node), got %v", edgeToRight.SourceSide)
+	}
+
+	// Port offset must be preserved regardless of per-edge side
+	hubPorts := layout.Nodes["Hub"].Ports
+	if hubPorts == nil {
+		t.Fatal("Hub has no ports in layout")
+	}
+	if p := hubPorts["port-3"]; p.Offset != 44 {
+		t.Errorf("port-3 offset: got %v, want 44", p.Offset)
+	}
+}
+
 // ==================== Side Inference Tests ====================
 
 func TestSideInference_TopToBottom(t *testing.T) {

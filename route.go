@@ -405,7 +405,9 @@ func (s *layoutState) intersectRect(node *layoutNode, point EdgePoint) EdgePoint
 }
 
 // inferEdgeSides computes the optimal attachment side for each edge endpoint.
-// When ports are specified, the port's Side takes precedence.
+// For PortFixedOffset ports, the side is computed per-edge based on the direction
+// to the specific connected node (not averaged across all connections).
+// For other port types, the port's pre-computed Side takes precedence.
 func (s *layoutState) inferEdgeSides() {
 	for _, edge := range s.edges {
 		fromNode := s.nodes[edge.key.from]
@@ -416,8 +418,8 @@ func (s *layoutState) inferEdgeSides() {
 
 		// Source side
 		if edge.sourcePort != "" {
-			if side, ok := s.getPortSide(fromNode, edge.sourcePort); ok {
-				edge.sourceSide = side
+			if port := s.getPort(fromNode, edge.sourcePort); port != nil {
+				edge.sourceSide = s.edgePortSide(port, fromNode, toNode)
 			} else {
 				edge.sourceSide, _ = inferSide(fromNode, toNode)
 			}
@@ -427,8 +429,8 @@ func (s *layoutState) inferEdgeSides() {
 
 		// Target side
 		if edge.targetPort != "" {
-			if side, ok := s.getPortSide(toNode, edge.targetPort); ok {
-				edge.targetSide = side
+			if port := s.getPort(toNode, edge.targetPort); port != nil {
+				edge.targetSide = s.edgePortSide(port, toNode, fromNode)
 			} else {
 				_, edge.targetSide = inferSide(fromNode, toNode)
 			}
@@ -436,6 +438,28 @@ func (s *layoutState) inferEdgeSides() {
 			_, edge.targetSide = inferSide(fromNode, toNode)
 		}
 	}
+}
+
+// edgePortSide computes the attachment side for a port on thisNode facing connNode.
+// For PortFixedOffset: per-edge side based on direction to the specific connected node,
+// constrained by the port's axis. This ensures each edge exits toward its target
+// rather than using an averaged direction across all connections.
+// For other constraints: uses the port's pre-computed side (user space, converted to internal).
+//
+// Returns an internal-space side that undoDirectionAdjustment will transform to user space.
+func (s *layoutState) edgePortSide(port *PortOptions, thisNode, connNode *layoutNode) Side {
+	if port.Constraint == PortFixedOffset {
+		// Per-edge: direction to this specific connected node (internal coords)
+		dx := (connNode.x + connNode.width/2) - (thisNode.x + thisNode.width/2)
+		dy := (connNode.y + connNode.height/2) - (thisNode.y + thisNode.height/2)
+		// Transform to user space (axis constraints are defined in user space)
+		dx, dy = s.internalToUserDirection(dx, dy)
+		// bestSide returns a user-space side; convert to internal so
+		// undoDirectionAdjustment can correctly transform it back to user space.
+		return s.portSideToInternal(s.bestSide(dx, dy, port.Axis))
+	}
+	// port.Side is in user space (set by assignFreeSides); convert to internal.
+	return s.portSideToInternal(port.Side)
 }
 
 // inferSide determines the optimal source and target sides based on relative positions.
@@ -455,12 +479,20 @@ func inferSide(fromNode, toNode *layoutNode) (sourceSide, targetSide Side) {
 	return Top, Bottom
 }
 
+// getPort returns the port with the given ID on a node, or nil if not found.
+func (s *layoutState) getPort(node *layoutNode, portID string) *PortOptions {
+	for i := range node.ports {
+		if node.ports[i].ID == portID {
+			return &node.ports[i]
+		}
+	}
+	return nil
+}
+
 // getPortSide returns the side of a specific port on a node.
 func (s *layoutState) getPortSide(node *layoutNode, portID string) (Side, bool) {
-	for _, port := range node.ports {
-		if port.ID == portID {
-			return port.Side, true
-		}
+	if port := s.getPort(node, portID); port != nil {
+		return port.Side, true
 	}
 	return Top, false
 }

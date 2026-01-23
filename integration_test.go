@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// Tests for Phase 9 features and bug fixes
+// Integration tests for cross-cutting features and behaviors.
 
 func TestSelfLoopsPreserved(t *testing.T) {
 	g := NewGraph()

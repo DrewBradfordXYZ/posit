@@ -642,6 +642,7 @@ func (g *Graph) LayoutWithError(opts ...Options) (*Layout, error) {
 
 	// Phase 3: Add dummy nodes for edges spanning multiple layers
 	state.addDummyNodes()
+	state.markInteriorDummies()
 
 	// Phase 4: Order nodes within layers to minimize crossings
 	state.minimizeCrossings()
@@ -696,6 +697,7 @@ func (g *Graph) IncrementalLayout(base *Layout, changes IncrementalOptions, opts
 	state.makeAcyclic()
 	state.assignLayers()
 	state.addDummyNodes()
+	state.markInteriorDummies()
 
 	// When we have a base layout and only dimensions changed, restore ordering
 	// from base positions instead of re-running crossing minimization.

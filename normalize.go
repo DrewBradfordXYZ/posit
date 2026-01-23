@@ -132,6 +132,26 @@ func (s *layoutState) normalizeEdge(key edgeKey) int {
 	return dummyCount
 }
 
+// markInteriorDummies identifies dummy nodes that are in the interior of a
+// long-edge chain (both predecessor and successor are also dummies). These
+// nodes have their ordering fully determined by barycenter from their single
+// neighbor, making adjacent exchange redundant for them.
+// Reference: Eiglsperger, Siebenhaller, Kaufmann (2005) "An Efficient
+// Implementation of Sugiyama's Algorithm for Layered Graph Drawing"
+func (s *layoutState) markInteriorDummies() {
+	for id, node := range s.nodes {
+		if !node.isDummy {
+			continue
+		}
+		preds := s.predecessors[id]
+		succs := s.successors[id]
+		if len(preds) == 1 && len(succs) == 1 &&
+			s.nodes[preds[0]].isDummy && s.nodes[succs[0]].isDummy {
+			node.isInteriorDummy = true
+		}
+	}
+}
+
 // newDummyID generates a unique ID for a dummy node.
 func (s *layoutState) newDummyID() string {
 	s.dummyCounter++

@@ -51,8 +51,9 @@ type layoutNode struct {
 	x, y float64
 
 	// Dummy node tracking
-	isDummy   bool
-	edgeLabel *layoutEdge // original edge for dummies
+	isDummy         bool
+	isInteriorDummy bool        // interior of long-edge chain (both neighbors are dummies)
+	edgeLabel       *layoutEdge // original edge for dummies
 }
 
 // layoutEdge holds internal state for an edge during layout.

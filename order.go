@@ -271,6 +271,19 @@ func (s *layoutState) adjExchangeLayer(rank int) bool {
 		return false
 	}
 
+	// Skip layers where adjacent exchange cannot help: if fewer than 2 nodes
+	// are "active" (real nodes or boundary dummies), no beneficial swaps exist.
+	// Interior dummies have their order fully determined by barycenter.
+	activeCount := 0
+	for _, id := range layer {
+		if !s.nodes[id].isInteriorDummy {
+			activeCount++
+		}
+	}
+	if activeCount < 2 {
+		return false
+	}
+
 	// Build neighbor cache once — valid for all passes since neighbors
 	// are in adjacent layers and their positions don't change.
 	cache := s.buildNeighborCache(rank)
@@ -374,6 +387,11 @@ func (s *layoutState) greedyExchangeWithCache(rank int, cache *neighborCache) bo
 	for round := 0; round < maxRounds; round++ {
 		found := false
 		for i := 0; i < len(layer)-1; i++ {
+			// Skip interior dummy pairs — their order is fully determined
+			// by barycenter (single neighbor), so exchange is redundant.
+			if s.nodes[layer[i]].isInteriorDummy && s.nodes[layer[i+1]].isInteriorDummy {
+				continue
+			}
 			delta := s.swapCrossingDeltaCached(rank, i, cache)
 			if delta > 0 {
 				layer[i], layer[i+1] = layer[i+1], layer[i]
@@ -386,6 +404,9 @@ func (s *layoutState) greedyExchangeWithCache(rank int, cache *neighborCache) bo
 					leftBound = 0
 				}
 				for j := i - 1; j >= leftBound; j-- {
+					if s.nodes[layer[j]].isInteriorDummy && s.nodes[layer[j+1]].isInteriorDummy {
+						break
+					}
 					d := s.swapCrossingDeltaCached(rank, j, cache)
 					if d <= 0 {
 						break
@@ -401,6 +422,9 @@ func (s *layoutState) greedyExchangeWithCache(rank int, cache *neighborCache) bo
 					rightBound = len(layer) - 1
 				}
 				for j := i + 1; j < rightBound; j++ {
+					if s.nodes[layer[j]].isInteriorDummy && s.nodes[layer[j+1]].isInteriorDummy {
+						break
+					}
 					d := s.swapCrossingDeltaCached(rank, j, cache)
 					if d <= 0 {
 						break
@@ -429,6 +453,9 @@ func (s *layoutState) greedyExchangeWithCache(rank int, cache *neighborCache) bo
 func (s *layoutState) disturbLayerWithCache(rank int, cache *neighborCache) {
 	layer := s.layers[rank]
 	for i := 0; i < len(layer)-1; i++ {
+		if s.nodes[layer[i]].isInteriorDummy && s.nodes[layer[i+1]].isInteriorDummy {
+			continue
+		}
 		delta := s.swapCrossingDeltaCached(rank, i, cache)
 		if delta > 0 || (delta == 0 && s.rng.Intn(2) == 0) {
 			layer[i], layer[i+1] = layer[i+1], layer[i]

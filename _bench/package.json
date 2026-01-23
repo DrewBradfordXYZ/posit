@@ -1,0 +1,17 @@
+{
+  "name": "posit-bench-compare",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prebench": "npx esbuild node_modules/@msagl/core/dist/index.js --bundle --format=esm --outfile=msagl-bundle.mjs --platform=node --log-level=warning",
+    "bench": "node bench.mjs"
+  },
+  "dependencies": {
+    "@dagrejs/dagre": "^1.1.4",
+    "@msagl/core": "^1.0.16",
+    "elkjs": "^0.9.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.2"
+  }
+}

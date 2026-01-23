@@ -21,6 +21,12 @@ tasks:
     cmds:
       - go test -run TestBenchmarkReport -v -timeout 120s -bench-save
 
+  bench:compare:
+    desc: Compare Posit against dagre, MSAGL, and ELK
+    dir: _bench
+    cmds:
+      - npm run bench
+
   stress:
     desc: Run stress tests only
     cmds:

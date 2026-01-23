@@ -1,0 +1,4 @@
+node_modules/
+msagl-bundle.mjs
+package-lock.json
+results.json

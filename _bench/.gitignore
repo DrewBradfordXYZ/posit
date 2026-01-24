@@ -1,4 +1,5 @@
 node_modules/
 msagl-bundle.mjs
 package-lock.json
+profiles.json
 results.json

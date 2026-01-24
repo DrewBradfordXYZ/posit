@@ -825,6 +825,53 @@ func (g *Graph) IncrementalLayout(base *Layout, changes IncrementalOptions, opts
 	return layout
 }
 
+// RouteFromPositions computes edge paths given fixed node positions.
+// Use this when nodes have been manually positioned (e.g., after user drag)
+// and you need edge routing without re-running the full layout algorithm.
+//
+// This skips ranking, ordering, and coordinate assignment (phases 1-5),
+// running only edge routing: side inference, port attachment points,
+// self-loop arcs, and parallel edge offsets.
+//
+// Positions are in user coordinate space (same as Layout output).
+// Nodes not present in the positions map are placed at (0, 0).
+func (g *Graph) RouteFromPositions(positions map[string]Position, opts ...Options) *Layout {
+	opt := DefaultOptions()
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	state := newLayoutState(g, opt)
+
+	// Set node positions from user-provided coordinates
+	for id, pos := range positions {
+		if node, ok := state.nodes[id]; ok {
+			node.x = pos.X
+			node.y = pos.Y
+		}
+	}
+
+	// Compute port sides from node positions (assigns port.Side for getPortPosition)
+	state.computePortOffsets()
+
+	// Separate self-loops (they're routed independently)
+	state.removeSelfLoops()
+
+	// Route non-self-loop edges
+	state.inferEdgeSides()
+	if opt.RouteStyle == RouteOrthogonal {
+		state.routeOrthogonal()
+	} else {
+		state.addNodeIntersections()
+	}
+	state.offsetParallelEdges()
+
+	// Route self-loops with arc formula
+	state.restoreSelfLoops()
+
+	return state.buildLayout()
+}
+
 // adjustClusters sizes cluster nodes to contain their children.
 func (g *Graph) adjustClusters(layout *Layout) {
 	if len(g.clusters) == 0 {

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -13,7 +15,10 @@ import (
 	"math/rand"
 )
 
-var benchSave = flag.Bool("bench-save", false, "Save benchmark results as baseline")
+var (
+	benchSave   = flag.Bool("bench-save", false, "Save benchmark results as baseline")
+	benchExport = flag.Bool("bench-export", false, "Export graph profiles as JSON for cross-language benchmarks")
+)
 
 // benchProfile defines a graph profile for benchmarking.
 type benchProfile struct {
@@ -24,6 +29,8 @@ type benchProfile struct {
 // benchResult holds metrics for one profile run.
 type benchResult struct {
 	Name      string  `json:"name"`
+	Nodes     int     `json:"nodes"`
+	Edges     int     `json:"edges"`
 	TimeMs    float64 `json:"time_ms"`
 	Crossings int     `json:"crossings"`
 	Area      float64 `json:"area"`
@@ -34,7 +41,25 @@ type benchResult struct {
 
 // benchBaseline is the JSON format for saved baselines.
 type benchBaseline struct {
-	Profiles []benchResult `json:"profiles"`
+	Environment benchEnvironment `json:"environment"`
+	Profiles    []benchResult    `json:"profiles"`
+}
+
+// benchEnvironment records the system info when baseline was saved.
+type benchEnvironment struct {
+	GoVersion string `json:"go_version"`
+	GOOS      string `json:"goos"`
+	GOARCH    string `json:"goarch"`
+	NumCPU    int    `json:"num_cpu"`
+}
+
+func currentEnvironment() benchEnvironment {
+	return benchEnvironment{
+		GoVersion: runtime.Version(),
+		GOOS:      runtime.GOOS,
+		GOARCH:    runtime.GOARCH,
+		NumCPU:    runtime.NumCPU(),
+	}
 }
 
 func TestBenchmarkReport(t *testing.T) {
@@ -43,11 +68,11 @@ func TestBenchmarkReport(t *testing.T) {
 	}
 
 	profiles := []benchProfile{
-		{"Large (500n/1000e)", buildLargeGraph},
-		{"Dense (100n/~2000e)", buildDenseGraph},
-		{"Wide (100x5)", buildWideGraph},
-		{"Deep (200-chain)", buildDeepGraph},
-		{"Medium (100n/200e)", buildMediumGraph},
+		{"Large", buildLargeGraph},
+		{"Dense", buildDenseGraph},
+		{"Wide", buildWideGraph},
+		{"Deep", buildDeepGraph},
+		{"Medium", buildMediumGraph},
 	}
 
 	results := make([]benchResult, len(profiles))
@@ -61,6 +86,9 @@ func TestBenchmarkReport(t *testing.T) {
 	// Load and compare baseline if it exists
 	baseline, err := loadBaseline()
 	if err == nil && baseline != nil {
+		t.Logf("Baseline environment: %s %s/%s (%d CPUs)",
+			baseline.Environment.GoVersion, baseline.Environment.GOOS,
+			baseline.Environment.GOARCH, baseline.Environment.NumCPU)
 		printBaselineComparison(t, results, baseline.Profiles)
 	}
 
@@ -68,18 +96,27 @@ func TestBenchmarkReport(t *testing.T) {
 	if *benchSave {
 		saveBaseline(t, results)
 	}
+
+	// Export graph profiles for cross-language benchmarks
+	if *benchExport {
+		exportProfiles(t, profiles)
+	}
 }
 
 func runBenchProfile(p benchProfile) benchResult {
 	g := p.build()
+	nodeCount := len(g.nodes)
+	edgeCount := len(g.edges)
 
 	start := time.Now()
 	layout := g.Layout()
-	elapsed := time.Since(start)
+	elapsed := time.Since(start).Seconds() * 1000
 
 	return benchResult{
 		Name:      p.name,
-		TimeMs:    float64(elapsed.Milliseconds()),
+		Nodes:     nodeCount,
+		Edges:     edgeCount,
+		TimeMs:    math.Round(elapsed*100) / 100, // informational only
 		Crossings: countLayoutCrossings(layout),
 		Area:      layoutArea(layout),
 		Width:     layoutWidth(layout),
@@ -186,6 +223,48 @@ func buildMediumGraph() *Graph {
 		}
 	}
 	return g
+}
+
+// --- Standard Go Benchmarks ---
+
+func BenchmarkLayout_Large(b *testing.B) {
+	g := buildLargeGraph()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		g.Layout()
+	}
+}
+
+func BenchmarkLayout_Dense(b *testing.B) {
+	g := buildDenseGraph()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		g.Layout()
+	}
+}
+
+func BenchmarkLayout_Wide(b *testing.B) {
+	g := buildWideGraph()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		g.Layout()
+	}
+}
+
+func BenchmarkLayout_Deep(b *testing.B) {
+	g := buildDeepGraph()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		g.Layout()
+	}
+}
+
+func BenchmarkLayout_Medium(b *testing.B) {
+	g := buildMediumGraph()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		g.Layout()
+	}
 }
 
 // --- Metric Functions ---
@@ -320,31 +399,64 @@ func layoutHeight(layout *Layout) float64 {
 	return maxY - minY
 }
 
-// countLayers counts distinct Y positions (layers) in the layout.
+// countLayers counts distinct Y positions (layers) in the layout using
+// tolerance-based grouping. Positions within 1.0 unit are considered the same layer.
 func countLayers(layout *Layout) int {
-	ySet := make(map[float64]bool)
-	for _, n := range layout.Nodes {
-		// Round to avoid float precision issues
-		y := math.Round(n.Y*100) / 100
-		ySet[y] = true
+	if len(layout.Nodes) == 0 {
+		return 0
 	}
-	return len(ySet)
+
+	// Collect all Y center positions
+	ys := make([]float64, 0, len(layout.Nodes))
+	for _, n := range layout.Nodes {
+		ys = append(ys, n.Y)
+	}
+	sort.Float64s(ys)
+
+	// Count distinct layers: new layer when gap > tolerance
+	const tolerance = 1.0
+	layers := 1
+	prev := ys[0]
+	for i := 1; i < len(ys); i++ {
+		if ys[i]-prev > tolerance {
+			layers++
+			prev = ys[i]
+		}
+	}
+	return layers
 }
 
 // --- Output Formatting ---
 
 func printResultsTable(t *testing.T, results []benchResult) {
 	t.Log("")
-	t.Log("Benchmark Report")
-	t.Log("================")
-	t.Logf("%-20s | %8s | %9s | %12s | %6s", "Profile", "Time", "Crossings", "Size (WxH)", "Layers")
-	t.Logf("%-20s-+-%8s-+-%9s-+-%12s-+-%6s", strings.Repeat("-", 20), "--------", "---------", "------------", "------")
+	t.Log("Layout Quality Report")
+	t.Logf("Environment: %s %s/%s (%d CPUs)",
+		runtime.Version(), runtime.GOOS, runtime.GOARCH, runtime.NumCPU())
+	t.Log("Note: Use 'go test -bench=BenchmarkLayout' + benchstat for timing")
+	t.Log("=====================")
+	t.Logf("%-12s | %5s %5s | %9s | %12s | %6s | %10s",
+		"Profile", "Nodes", "Edges", "Crossings", "Size (WxH)", "Layers", "~Time")
+	t.Logf("%-12s-+-%5s-%5s-+-%9s-+-%12s-+-%6s-+-%10s",
+		strings.Repeat("-", 12), "-----", "-----", "---------", "------------", "------", "----------")
 
 	for _, r := range results {
 		size := fmt.Sprintf("%.0fx%.0f", r.Width, r.Height)
-		t.Logf("%-20s | %6.0fms | %9d | %12s | %6d", r.Name, r.TimeMs, r.Crossings, size, r.Layers)
+		timeStr := formatTime(r.TimeMs)
+		t.Logf("%-12s | %5d %5d | %9d | %12s | %6d | %10s",
+			r.Name, r.Nodes, r.Edges, r.Crossings, size, r.Layers, timeStr)
 	}
 	t.Log("")
+}
+
+func formatTime(ms float64) string {
+	if ms < 1 {
+		return fmt.Sprintf("%.2fms", ms)
+	}
+	if ms < 10 {
+		return fmt.Sprintf("%.1fms", ms)
+	}
+	return fmt.Sprintf("%.0fms", ms)
 }
 
 func printBaselineComparison(t *testing.T, current, baseline []benchResult) {
@@ -354,22 +466,22 @@ func printBaselineComparison(t *testing.T, current, baseline []benchResult) {
 		baseMap[b.Name] = b
 	}
 
-	t.Log("Baseline Comparison")
-	t.Log("===================")
-	t.Logf("%-20s | %8s | %11s | %8s", "Profile", "Time Δ", "Crossings Δ", "Area Δ")
-	t.Logf("%-20s-+-%8s-+-%11s-+-%8s", strings.Repeat("-", 20), "--------", "-----------", "--------")
+	t.Log("Baseline Comparison (deterministic metrics only)")
+	t.Log("================================================")
+	t.Logf("%-12s | %11s | %8s | %8s", "Profile", "Crossings Δ", "Area Δ", "Layers Δ")
+	t.Logf("%-12s-+-%11s-+-%8s-+-%8s", strings.Repeat("-", 12), "-----------", "--------", "--------")
 
 	for _, r := range current {
 		b, ok := baseMap[r.Name]
 		if !ok {
-			t.Logf("%-20s | %8s | %11s | %8s", r.Name, "new", "new", "new")
+			t.Logf("%-12s | %11s | %8s | %8s", r.Name, "new", "new", "new")
 			continue
 		}
 
-		timeD := deltaStr(b.TimeMs, r.TimeMs)
 		crossD := deltaStr(float64(b.Crossings), float64(r.Crossings))
 		areaD := deltaStr(b.Area, r.Area)
-		t.Logf("%-20s | %8s | %11s | %8s", r.Name, timeD, crossD, areaD)
+		layerD := deltaStr(float64(b.Layers), float64(r.Layers))
+		t.Logf("%-12s | %11s | %8s | %8s", r.Name, crossD, areaD, layerD)
 	}
 	t.Log("")
 }
@@ -409,7 +521,10 @@ func loadBaseline() (*benchBaseline, error) {
 }
 
 func saveBaseline(t *testing.T, results []benchResult) {
-	b := benchBaseline{Profiles: results}
+	b := benchBaseline{
+		Environment: currentEnvironment(),
+		Profiles:    results,
+	}
 	data, err := json.MarshalIndent(b, "", "  ")
 	if err != nil {
 		t.Fatalf("Failed to marshal baseline: %v", err)
@@ -418,4 +533,73 @@ func saveBaseline(t *testing.T, results []benchResult) {
 		t.Fatalf("Failed to write baseline: %v", err)
 	}
 	t.Logf("Baseline saved to %s", baselineFile)
+}
+
+// --- Graph Export for Cross-Language Benchmarks ---
+
+type exportedProfile struct {
+	Name  string         `json:"name"`
+	Nodes []exportedNode `json:"nodes"`
+	Edges []exportedEdge `json:"edges"`
+}
+
+type exportedNode struct {
+	ID     string  `json:"id"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
+
+type exportedEdge struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+const profilesExportFile = "_bench/profiles.json"
+
+func exportProfiles(t *testing.T, profiles []benchProfile) {
+	var exported []exportedProfile
+	for _, p := range profiles {
+		g := p.build()
+		ep := exportedProfile{Name: p.name}
+
+		// Export nodes sorted by insertion order
+		type nodeEntry struct {
+			id    string
+			node  *node
+			order int
+		}
+		var entries []nodeEntry
+		for id, n := range g.nodes {
+			entries = append(entries, nodeEntry{id, n, n.insertOrder})
+		}
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].order < entries[j].order
+		})
+		for _, e := range entries {
+			ep.Nodes = append(ep.Nodes, exportedNode{
+				ID:     e.id,
+				Width:  e.node.width,
+				Height: e.node.height,
+			})
+		}
+
+		// Export edges
+		for _, e := range g.edges {
+			ep.Edges = append(ep.Edges, exportedEdge{
+				From: e.from,
+				To:   e.to,
+			})
+		}
+
+		exported = append(exported, ep)
+	}
+
+	data, err := json.MarshalIndent(exported, "", "  ")
+	if err != nil {
+		t.Fatalf("Failed to marshal profiles: %v", err)
+	}
+	if err := os.WriteFile(profilesExportFile, data, 0644); err != nil {
+		t.Fatalf("Failed to write profiles: %v", err)
+	}
+	t.Logf("Profiles exported to %s", profilesExportFile)
 }

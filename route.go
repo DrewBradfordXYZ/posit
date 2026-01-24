@@ -1059,28 +1059,109 @@ func (s *layoutState) resolveEdgeLabelCollisions() {
 }
 
 // restoreSelfLoops generates paths for self-referential edges.
-// Self-loops attach at the top-center of the node with a slight horizontal
-// offset so the bezier curve naturally forms a circular arc above the node.
+// For edges with PortFixedOffset ports, both endpoints attach on the same side
+// (determined by port axis) and arc outward via a waypoint. Multiple self-loops
+// on the same node are staggered so arcs don't overlap.
+// For edges without port info, a default right-side arc is generated.
 func (s *layoutState) restoreSelfLoops() {
+	// Group by node for staggering
+	nodeLoops := make(map[string][]*layoutEdge)
 	for _, edge := range s.selfLoops {
-		node := s.nodes[edge.key.from]
+		nodeLoops[edge.key.from] = append(nodeLoops[edge.key.from], edge)
+	}
+
+	for nodeID, loops := range nodeLoops {
+		node := s.nodes[nodeID]
 		if node == nil {
 			continue
 		}
 
-		cx := node.x + node.width/2
-		top := node.y
-		portSpread := 8.0 // horizontal offset from center for each port
+		for i, edge := range loops {
+			side := s.selfLoopArcSide(node, edge)
+			srcOffset := s.selfLoopPortOffset(node, edge.sourcePort, side)
+			tgtOffset := s.selfLoopPortOffset(node, edge.targetPort, side)
 
-		// Two points at top-center: bezier handles the arc
-		edge.points = []EdgePoint{
-			{X: cx - portSpread, Y: top},
-			{X: cx + portSpread, Y: top},
+			// Arc width scales with port distance for perpendicular entry/exit.
+			// Stagger multiple self-loops so arcs don't overlap.
+			portDist := tgtOffset - srcOffset
+			if portDist < 0 {
+				portDist = -portDist
+			}
+			loopDist := portDist * 0.6
+			if loopDist < 30.0 {
+				loopDist = 30.0
+			}
+			loopDist += float64(i) * 10.0
+			midOffset := (srcOffset + tgtOffset) / 2
+
+			var start, waypoint, end EdgePoint
+			switch side {
+			case Right:
+				x := node.x + node.width
+				start = EdgePoint{X: x, Y: node.y + srcOffset}
+				waypoint = EdgePoint{X: x + loopDist, Y: node.y + midOffset}
+				end = EdgePoint{X: x, Y: node.y + tgtOffset}
+			case Left:
+				x := node.x
+				start = EdgePoint{X: x, Y: node.y + srcOffset}
+				waypoint = EdgePoint{X: x - loopDist, Y: node.y + midOffset}
+				end = EdgePoint{X: x, Y: node.y + tgtOffset}
+			case Bottom:
+				y := node.y + node.height
+				start = EdgePoint{X: node.x + srcOffset, Y: y}
+				waypoint = EdgePoint{X: node.x + midOffset, Y: y + loopDist}
+				end = EdgePoint{X: node.x + tgtOffset, Y: y}
+			default: // Top
+				y := node.y
+				start = EdgePoint{X: node.x + srcOffset, Y: y}
+				waypoint = EdgePoint{X: node.x + midOffset, Y: y - loopDist}
+				end = EdgePoint{X: node.x + tgtOffset, Y: y}
+			}
+
+			edge.points = []EdgePoint{start, waypoint, end}
+			edge.sourceSide = side
+			edge.targetSide = side
+
+			s.edges[edge.key] = edge
 		}
+	}
+}
 
-		edge.sourceSide = Top
-		edge.targetSide = Top
+// selfLoopArcSide determines which side self-loop arcs should use.
+// For PortFixedOffset with PortAxisHorizontal: Right (internal space).
+// For PortFixedOffset with PortAxisVertical: Bottom (internal space).
+// Falls back to Right if no port info available.
+func (s *layoutState) selfLoopArcSide(node *layoutNode, edge *layoutEdge) Side {
+	// Check source port axis preference
+	if edge.sourcePort != "" {
+		if port := s.getPort(node, edge.sourcePort); port != nil {
+			if port.Constraint == PortFixedOffset {
+				switch port.Axis {
+				case PortAxisVertical:
+					return s.portSideToInternal(Bottom)
+				default:
+					return s.portSideToInternal(Right)
+				}
+			}
+		}
+	}
+	return s.portSideToInternal(Right)
+}
 
-		s.edges[edge.key] = edge
+// selfLoopPortOffset returns the offset along the arc side for a port.
+// For PortFixedOffset ports, uses the declared offset.
+// Falls back to node center along that side.
+func (s *layoutState) selfLoopPortOffset(node *layoutNode, portID string, side Side) float64 {
+	if portID != "" {
+		if port := s.getPort(node, portID); port != nil {
+			return port.Offset
+		}
+	}
+	// Fallback: center of the side
+	switch side {
+	case Right, Left:
+		return node.height / 2
+	default:
+		return node.width / 2
 	}
 }

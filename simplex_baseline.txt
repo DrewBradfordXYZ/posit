@@ -1,0 +1,51 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/DrewBradfordXYZ/posit
+cpu: Apple M4
+BenchmarkSimplex_Y_Chain50-10                	    1334	    861085 ns/op
+BenchmarkSimplex_Y_Chain50-10                	    1419	    859326 ns/op
+BenchmarkSimplex_Y_Chain50-10                	    1418	    852742 ns/op
+BenchmarkSimplex_Y_Chain100-10               	     501	   2414419 ns/op
+BenchmarkSimplex_Y_Chain100-10               	     504	   2373644 ns/op
+BenchmarkSimplex_Y_Chain100-10               	     516	   2417072 ns/op
+BenchmarkSimplex_Y_Chain200-10               	     183	   6396605 ns/op
+BenchmarkSimplex_Y_Chain200-10               	     186	   6314597 ns/op
+BenchmarkSimplex_Y_Chain200-10               	     187	   6344640 ns/op
+BenchmarkSimplex_Y_FanOut3x3-10              	    1196	   1027786 ns/op
+BenchmarkSimplex_Y_FanOut3x3-10              	    1111	   1035822 ns/op
+BenchmarkSimplex_Y_FanOut3x3-10              	    1149	   1019682 ns/op
+BenchmarkSimplex_Y_FanOut4x3-10              	     428	   2790575 ns/op
+BenchmarkSimplex_Y_FanOut4x3-10              	     418	   2824655 ns/op
+BenchmarkSimplex_Y_FanOut4x3-10              	     429	   2784529 ns/op
+BenchmarkSimplex_Y_Diamond25-10              	     339	   3578162 ns/op
+BenchmarkSimplex_Y_Diamond25-10              	     348	   3504617 ns/op
+BenchmarkSimplex_Y_Diamond25-10              	     332	   3822167 ns/op
+BenchmarkSimplex_Y_Layered10x5-10            	     100	  10207250 ns/op
+BenchmarkSimplex_Y_Layered10x5-10            	     100	  10275558 ns/op
+BenchmarkSimplex_Y_Layered10x5-10            	     100	  10046815 ns/op
+BenchmarkSimplex_Y_Layered20x5-10            	      21	  57554073 ns/op
+BenchmarkSimplex_Y_Layered20x5-10            	      18	  57055576 ns/op
+BenchmarkSimplex_Y_Layered20x5-10            	      20	  57883440 ns/op
+BenchmarkSimplex_X_BK_Layered10x5-10         	     100	  10013964 ns/op
+BenchmarkSimplex_X_BK_Layered10x5-10         	     100	  10034371 ns/op
+BenchmarkSimplex_X_BK_Layered10x5-10         	     100	  10395988 ns/op
+BenchmarkSimplex_X_Simplex_Layered10x5-10    	      20	  62503169 ns/op
+BenchmarkSimplex_X_Simplex_Layered10x5-10    	      19	  62300461 ns/op
+BenchmarkSimplex_X_Simplex_Layered10x5-10    	      18	  61586727 ns/op
+BenchmarkSimplex_X_BK_Layered20x5-10         	      19	  56208717 ns/op
+BenchmarkSimplex_X_BK_Layered20x5-10         	      22	  56986011 ns/op
+BenchmarkSimplex_X_BK_Layered20x5-10         	      22	  55806119 ns/op
+BenchmarkSimplex_X_Simplex_Layered20x5-10    	       2	 609360916 ns/op
+BenchmarkSimplex_X_Simplex_Layered20x5-10    	       2	 554663375 ns/op
+BenchmarkSimplex_X_Simplex_Layered20x5-10    	       2	 551527146 ns/op
+BenchmarkSimplex_AntiStack_Chain50-10        	     207	   5529570 ns/op
+BenchmarkSimplex_AntiStack_Chain50-10        	     219	   5610174 ns/op
+BenchmarkSimplex_AntiStack_Chain50-10        	     214	   6026806 ns/op
+BenchmarkSimplex_AntiStack_Diamond25-10      	      34	  35434852 ns/op
+BenchmarkSimplex_AntiStack_Diamond25-10      	      34	  33414991 ns/op
+BenchmarkSimplex_AntiStack_Diamond25-10      	      34	  33174243 ns/op
+BenchmarkSimplex_AntiStack_Layered10x5-10    	      27	  45727460 ns/op
+BenchmarkSimplex_AntiStack_Layered10x5-10    	      24	  46727943 ns/op
+BenchmarkSimplex_AntiStack_Layered10x5-10    	      25	  45671082 ns/op
+PASS
+ok  	github.com/DrewBradfordXYZ/posit	152.992s

@@ -53,6 +53,17 @@ Consumers of posit's output (serialization layers, renderers, UI frameworks) can
 - Nodes on the same layer share the same Y coordinate.
 - Layer spacing is at least `RankSep` (default: 100).
 
+### Cross-Layer Boundary Spacing
+
+When `Options.NodeNodeBetweenLayers > 0`, an additional guarantee applies:
+
+- For any two non-dummy, non-cluster nodes in adjacent layers whose horizontal ranges overlap (their X ranges intersect), the vertical gap between their boundaries is at least `NodeNodeBetweenLayers`.
+- "Vertical gap" means the distance from the bottom edge of the upper node to the top edge of the lower node.
+- Nodes with a direct edge between them are exempt (edge routing handles their visual connection).
+- This prevents tall nodes from visually overlapping across layers, even when `RankSep` alone would be insufficient.
+- Resolution strategies: (1) horizontal shift when there's room within same-layer constraints, (2) increased layer gap when horizontal shift isn't possible.
+- This guarantee applies to all four directions (`TopToBottom`, `LeftToRight`, `BottomToTop`, `RightToLeft`), with "vertical" and "horizontal" adjusted to match the direction's coordinate system.
+
 ## Determinism
 
 - The same graph (same nodes, same edges, same options) always produces the exact same Layout. There is no randomness in the algorithm.

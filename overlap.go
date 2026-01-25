@@ -1,5 +1,7 @@
 package posit
 
+import "sort"
+
 // crossLayerOverlap represents two nodes in adjacent layers whose X ranges
 // intersect and whose vertical gap is less than the required spacing.
 type crossLayerOverlap struct {
@@ -10,6 +12,13 @@ type crossLayerOverlap struct {
 	required float64     // Required gap (NodeNodeBetweenLayers)
 }
 
+// overlapContext holds pre-computed data for efficient overlap resolution.
+// Built once per resolution pass to avoid O(n²×m) edge lookups.
+type overlapContext struct {
+	directEdges map[[2]string]bool // O(1) edge lookup
+	connCounts  map[string]int     // O(1) connection count lookup
+}
+
 // resolveCrossLayerOverlaps adjusts node positions to ensure minimum
 // spacing between node boundaries in adjacent layers.
 func (s *layoutState) resolveCrossLayerOverlaps() {
@@ -17,16 +26,20 @@ func (s *layoutState) resolveCrossLayerOverlaps() {
 		return // Feature disabled
 	}
 
-	// Iterate until stable or max iterations (to handle cascading shifts)
+	// Pre-compute edge lookups for O(1) access
+	ctx := s.buildOverlapContext()
+
+	// Iterate until stable or max iterations (handles cascading shifts).
+	// Most graphs converge in 1-2 iterations; 10 is a safety limit.
 	for iteration := 0; iteration < 10; iteration++ {
-		overlaps := s.findAllCrossLayerOverlaps()
+		overlaps := s.findAllCrossLayerOverlaps(ctx)
 		if len(overlaps) == 0 {
 			break
 		}
 
 		resolved := false
 		for _, o := range overlaps {
-			if s.resolveOverlap(o) {
+			if s.resolveOverlap(o, ctx) {
 				resolved = true
 			}
 		}
@@ -37,32 +50,60 @@ func (s *layoutState) resolveCrossLayerOverlaps() {
 	}
 }
 
-// findAllCrossLayerOverlaps finds all node pairs in adjacent layers that
-// have overlapping X ranges and insufficient vertical spacing.
-func (s *layoutState) findAllCrossLayerOverlaps() []crossLayerOverlap {
-	var overlaps []crossLayerOverlap
-
-	// Group non-dummy nodes by rank (layer)
-	rankNodes := make(map[int][]*layoutNode)
-	maxRank := 0
-	for _, node := range s.nodes {
-		if node.isDummy {
-			continue // Skip dummy nodes
-		}
-		rankNodes[node.rank] = append(rankNodes[node.rank], node)
-		if node.rank > maxRank {
-			maxRank = node.rank
-		}
+// buildOverlapContext pre-computes edge and connection data for efficient lookup.
+func (s *layoutState) buildOverlapContext() *overlapContext {
+	ctx := &overlapContext{
+		directEdges: make(map[[2]string]bool),
+		connCounts:  make(map[string]int),
 	}
 
-	// Check each pair of adjacent layers
-	for rank := 0; rank < maxRank; rank++ {
-		upperLayer := rankNodes[rank]
-		lowerLayer := rankNodes[rank+1]
+	for _, edge := range s.edges {
+		// Store both directions for O(1) lookup
+		ctx.directEdges[[2]string{edge.key.from, edge.key.to}] = true
+		ctx.directEdges[[2]string{edge.key.to, edge.key.from}] = true
+
+		// Count connections per node
+		ctx.connCounts[edge.key.from]++
+		ctx.connCounts[edge.key.to]++
+	}
+
+	return ctx
+}
+
+// findAllCrossLayerOverlaps finds all node pairs in adjacent layers that
+// have overlapping X ranges and insufficient vertical spacing.
+func (s *layoutState) findAllCrossLayerOverlaps(ctx *overlapContext) []crossLayerOverlap {
+	var overlaps []crossLayerOverlap
+
+	// Group non-dummy, non-cluster nodes by rank
+	rankNodes := make(map[int][]*layoutNode)
+	for _, node := range s.nodes {
+		if node.isDummy {
+			continue // Skip dummy nodes (edge routing points)
+		}
+		if _, isCluster := s.clusters[node.id]; isCluster {
+			continue // Skip clusters (resized later by adjustClusters)
+		}
+		rankNodes[node.rank] = append(rankNodes[node.rank], node)
+	}
+
+	// Get sorted list of ranks (handles non-consecutive ranks)
+	ranks := make([]int, 0, len(rankNodes))
+	for r := range rankNodes {
+		ranks = append(ranks, r)
+	}
+	sort.Ints(ranks)
+
+	// Check each pair of adjacent ranks
+	for i := 0; i < len(ranks)-1; i++ {
+		upperRank := ranks[i]
+		lowerRank := ranks[i+1]
+		upperLayer := rankNodes[upperRank]
+		lowerLayer := rankNodes[lowerRank]
 
 		for _, upper := range upperLayer {
 			for _, lower := range lowerLayer {
-				if o := s.checkCrossLayerOverlap(upper, lower); o != nil {
+				if o := s.checkCrossLayerOverlap(upper, lower, ctx); o != nil {
 					overlaps = append(overlaps, *o)
 				}
 			}
@@ -74,7 +115,7 @@ func (s *layoutState) findAllCrossLayerOverlaps() []crossLayerOverlap {
 
 // checkCrossLayerOverlap checks if two nodes have an overlap that needs resolution.
 // Returns nil if no overlap or if it's a direct edge (handled by routing).
-func (s *layoutState) checkCrossLayerOverlap(upper, lower *layoutNode) *crossLayerOverlap {
+func (s *layoutState) checkCrossLayerOverlap(upper, lower *layoutNode, ctx *overlapContext) *crossLayerOverlap {
 	// Check X-range intersection
 	uLeft := upper.x
 	uRight := upper.x + upper.width
@@ -97,8 +138,8 @@ func (s *layoutState) checkCrossLayerOverlap(upper, lower *layoutNode) *crossLay
 	}
 
 	// Skip if there's a direct edge between these nodes
-	// (the edge routing will handle the connection)
-	if s.hasDirectEdge(upper.id, lower.id) {
+	// (edge routing will handle the visual connection)
+	if ctx.directEdges[[2]string{upper.id, lower.id}] {
 		return nil
 	}
 
@@ -111,22 +152,11 @@ func (s *layoutState) checkCrossLayerOverlap(upper, lower *layoutNode) *crossLay
 	}
 }
 
-// hasDirectEdge checks if there's a direct edge between two nodes.
-func (s *layoutState) hasDirectEdge(a, b string) bool {
-	for _, edge := range s.edges {
-		if (edge.key.from == a && edge.key.to == b) ||
-			(edge.key.from == b && edge.key.to == a) {
-			return true
-		}
-	}
-	return false
-}
-
 // resolveOverlap attempts to resolve a cross-layer overlap.
 // Returns true if progress was made.
-func (s *layoutState) resolveOverlap(o crossLayerOverlap) bool {
+func (s *layoutState) resolveOverlap(o crossLayerOverlap, ctx *overlapContext) bool {
 	// Strategy 1: Try horizontal shift (preferred, local impact)
-	if s.resolveByHorizontalShift(o) {
+	if s.resolveByHorizontalShift(o, ctx) {
 		return true
 	}
 
@@ -137,13 +167,13 @@ func (s *layoutState) resolveOverlap(o crossLayerOverlap) bool {
 
 // resolveByHorizontalShift tries to shift one node horizontally to eliminate
 // the X overlap. Prefers shifting the node with fewer connections.
-func (s *layoutState) resolveByHorizontalShift(o crossLayerOverlap) bool {
+func (s *layoutState) resolveByHorizontalShift(o crossLayerOverlap, ctx *overlapContext) bool {
 	// Calculate minimum shift needed to eliminate X overlap
 	minShift := o.xOverlap + 1 // +1 for clearance
 
-	// Try shifting the node with fewer connections first
-	upperConns := s.countConnections(o.upper)
-	lowerConns := s.countConnections(o.lower)
+	// Prefer shifting the node with fewer connections (less impact on layout)
+	upperConns := ctx.connCounts[o.upper.id]
+	lowerConns := ctx.connCounts[o.lower.id]
 
 	if upperConns <= lowerConns {
 		if s.tryShiftNode(o.upper, minShift) {
@@ -157,24 +187,16 @@ func (s *layoutState) resolveByHorizontalShift(o crossLayerOverlap) bool {
 	return s.tryShiftNode(o.upper, minShift)
 }
 
-// countConnections returns the number of edges connected to a node.
-func (s *layoutState) countConnections(n *layoutNode) int {
-	count := 0
-	for _, edge := range s.edges {
-		if edge.key.from == n.id || edge.key.to == n.id {
-			count++
-		}
-	}
-	return count
-}
-
 // tryShiftNode attempts to shift a node horizontally by at least minShift.
 // Returns true if successful.
 func (s *layoutState) tryShiftNode(n *layoutNode, minShift float64) bool {
-	// Get same-layer neighbors
+	// Get same-layer neighbors (non-dummy, non-cluster)
 	var leftNeighbor, rightNeighbor *layoutNode
 	for _, other := range s.nodes {
 		if other.isDummy || other.rank != n.rank || other.id == n.id {
+			continue
+		}
+		if _, isCluster := s.clusters[other.id]; isCluster {
 			continue
 		}
 		if other.x+other.width <= n.x {

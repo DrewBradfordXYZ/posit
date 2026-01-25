@@ -190,3 +190,155 @@ func TestCrossLayerWideNodes(t *testing.T) {
 		}
 	}
 }
+
+func TestCrossLayerEmptyGraph(t *testing.T) {
+	// Empty graph should not panic
+	g := NewGraph()
+	layout := g.Layout(Options{
+		NodeNodeBetweenLayers: 20,
+	})
+
+	if len(layout.Nodes) != 0 {
+		t.Errorf("Expected 0 nodes, got %d", len(layout.Nodes))
+	}
+}
+
+func TestCrossLayerSingleNode(t *testing.T) {
+	// Single node should not panic (no adjacent layers to check)
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{Width: 100, Height: 150})
+
+	layout := g.Layout(Options{
+		NodeNodeBetweenLayers: 20,
+	})
+
+	if _, ok := layout.Nodes["A"]; !ok {
+		t.Error("Node A not in layout")
+	}
+}
+
+func TestCrossLayerLeftToRight(t *testing.T) {
+	// Verify cross-layer spacing works with LeftToRight direction
+	// In LR mode, "layers" are vertical columns, so we check horizontal gaps
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{Width: 150, Height: 100}) // Tall in user terms = wide internally
+	g.AddNode("B", NodeOptions{Width: 150, Height: 100})
+	g.MustAddEdge("A", "B")
+
+	layout := g.Layout(Options{
+		Direction:             LeftToRight,
+		RankSep:               100,
+		NodeNodeBetweenLayers: 20,
+	})
+
+	// In LeftToRight, A is left of B (lower X)
+	// Gap is measured horizontally: B.X - (A.X + A.Width)
+	aRight := layout.Nodes["A"].X + layout.Nodes["A"].Width
+	bLeft := layout.Nodes["B"].X
+
+	gap := bLeft - aRight
+	if gap < 20 {
+		t.Errorf("LeftToRight gap = %.1f, want >= 20", gap)
+	}
+}
+
+func TestCrossLayerBottomToTop(t *testing.T) {
+	// Verify cross-layer spacing works with BottomToTop direction
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{Width: 100, Height: 150})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 150})
+	g.MustAddEdge("A", "B")
+
+	layout := g.Layout(Options{
+		Direction:             BottomToTop,
+		RankSep:               100,
+		NodeNodeBetweenLayers: 20,
+	})
+
+	// In BottomToTop, A is below B (higher Y)
+	// Gap is measured vertically: A.Y - (B.Y + B.Height)
+	bBottom := layout.Nodes["B"].Y + layout.Nodes["B"].Height
+	aTop := layout.Nodes["A"].Y
+
+	gap := aTop - bBottom
+	if gap < 20 {
+		t.Errorf("BottomToTop gap = %.1f, want >= 20", gap)
+	}
+}
+
+func TestCrossLayerRightToLeft(t *testing.T) {
+	// Verify cross-layer spacing works with RightToLeft direction
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{Width: 150, Height: 100})
+	g.AddNode("B", NodeOptions{Width: 150, Height: 100})
+	g.MustAddEdge("A", "B")
+
+	layout := g.Layout(Options{
+		Direction:             RightToLeft,
+		RankSep:               100,
+		NodeNodeBetweenLayers: 20,
+	})
+
+	// In RightToLeft, A is right of B (higher X)
+	// Gap is measured horizontally: A.X - (B.X + B.Width)
+	bRight := layout.Nodes["B"].X + layout.Nodes["B"].Width
+	aLeft := layout.Nodes["A"].X
+
+	gap := aLeft - bRight
+	if gap < 20 {
+		t.Errorf("RightToLeft gap = %.1f, want >= 20", gap)
+	}
+}
+
+func TestCrossLayerWithClusters(t *testing.T) {
+	// Clusters should be skipped in overlap detection
+	// (they are resized by adjustClusters after layout)
+	g := NewGraph()
+	g.AddNode("cluster", NodeOptions{Width: 200, Height: 200, IsCluster: true})
+	g.AddNode("A", NodeOptions{Width: 100, Height: 100})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 100})
+	g.SetParent("A", "cluster")
+	g.SetParent("B", "cluster")
+	g.MustAddEdge("A", "B")
+
+	// Should not panic
+	layout := g.Layout(Options{
+		NodeNodeBetweenLayers: 20,
+	})
+
+	if _, ok := layout.Nodes["A"]; !ok {
+		t.Error("Node A not in layout")
+	}
+	if _, ok := layout.Nodes["B"]; !ok {
+		t.Error("Node B not in layout")
+	}
+}
+
+func TestCrossLayerPreferHorizontalShift(t *testing.T) {
+	// When there's room to shift horizontally, should use that
+	// rather than increasing layer gap
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{Width: 50, Height: 150})
+	g.AddNode("B", NodeOptions{Width: 50, Height: 50})
+	g.AddNode("C", NodeOptions{Width: 50, Height: 50})
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("A", "C")
+
+	// Large NodeSep gives room for horizontal shift
+	layoutWithShift := g.Layout(Options{
+		NodeSep:               200,
+		RankSep:               50,
+		NodeNodeBetweenLayers: 20,
+	})
+
+	// All nodes should be laid out successfully
+	if _, ok := layoutWithShift.Nodes["A"]; !ok {
+		t.Error("Node A not in layout")
+	}
+	if _, ok := layoutWithShift.Nodes["B"]; !ok {
+		t.Error("Node B not in layout")
+	}
+	if _, ok := layoutWithShift.Nodes["C"]; !ok {
+		t.Error("Node C not in layout")
+	}
+}

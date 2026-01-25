@@ -210,6 +210,13 @@ type Options struct {
 	// ComponentGap is the spacing between disconnected components.
 	// Default: NodeSep * 2.
 	ComponentGap float64
+
+	// NodeNodeBetweenLayers is the minimum spacing between node boundaries
+	// in adjacent layers. When two nodes in layers i and i+1 have overlapping
+	// X ranges, this spacing is enforced between their closest vertical edges.
+	// This prevents tall nodes from visually overlapping across layers.
+	// Default: 0 (disabled, uses fixed RankSep only).
+	NodeNodeBetweenLayers float64
 }
 
 // DefaultOptions returns sensible defaults for layout.
@@ -705,6 +712,9 @@ func (g *Graph) LayoutWithError(opts ...Options) (*Layout, error) {
 	// Phase 5: Assign X/Y coordinates
 	state.assignCoordinates()
 
+	// Phase 5a: Resolve cross-layer overlaps (if NodeNodeBetweenLayers > 0)
+	state.resolveCrossLayerOverlaps()
+
 	// Phase 5b: Compute auto port offsets (PortFixedSide, PortFixedOrder)
 	state.computePortOffsets()
 
@@ -815,6 +825,7 @@ func (g *Graph) IncrementalLayout(base *Layout, changes IncrementalOptions, opts
 		state.assignCoordinates()
 	}
 
+	state.resolveCrossLayerOverlaps()
 	state.computePortOffsets()
 	state.packComponents()
 	state.routeEdges()

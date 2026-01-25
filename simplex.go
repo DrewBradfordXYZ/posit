@@ -1091,10 +1091,18 @@ func (xs *xSimplexState) buildAuxiliaryGraph() {
 
 	// Step 2: For each original edge, create edge-proxy node
 	// The proxy node will be positioned at min(x_u, x_v)
-	edgeNum := 0
-	for key, edge := range xs.s.edges {
+	// Sort edges for deterministic proxy node IDs
+	edgeKeys := make([]edgeKey, 0, len(xs.s.edges))
+	for key := range xs.s.edges {
+		edgeKeys = append(edgeKeys, key)
+	}
+	sort.Slice(edgeKeys, func(i, j int) bool {
+		return edgeKeyLess(edgeKeys[i], edgeKeys[j])
+	})
+
+	for edgeNum, key := range edgeKeys {
+		edge := xs.s.edges[key]
 		proxyID := fmt.Sprintf("_e%d", edgeNum)
-		edgeNum++
 
 		// Calculate Omega weight based on endpoint types
 		omega := xs.calcOmega(key)
@@ -1134,7 +1142,7 @@ func (xs *xSimplexState) buildAuxiliaryGraph() {
 
 	// Step 4: Add cross-layer anti-stacking edges (if enabled)
 	// Skip for large graphs (>100 nodes) as it becomes too slow
-	if xs.s.opts.PreventStacking && len(xs.s.nodes) <= 100 {
+	if xs.s.opts.PreventStacking && len(xs.s.nodes) <= 150 {
 		xs.addAntiStackingEdges()
 	}
 }
@@ -1251,13 +1259,14 @@ func (xs *xSimplexState) removeAuxSubtreeLeaves() {
 		degree[id] = len(xs.auxSucc[id]) + len(xs.auxPred[id])
 	}
 
-	// Find initial leaves
+	// Find initial leaves (sorted for determinism)
 	queue := make([]string, 0)
 	for id, d := range degree {
 		if d == 1 {
 			queue = append(queue, id)
 		}
 	}
+	sort.Strings(queue)
 
 	// Process leaves until none remain
 	for len(queue) > 0 {
@@ -1275,13 +1284,16 @@ func (xs *xSimplexState) removeAuxSubtreeLeaves() {
 			continue
 		}
 
-		// Find the single edge connected to this node
+		// Find the single edge connected to this node (sorted for determinism)
 		var foundKey xEdgeKey
 		var isOutEdge bool
 		found := false
 
-		// Check outgoing edges
-		for _, to := range xs.auxSucc[nodeID] {
+		// Check outgoing edges (sorted)
+		outgoing := make([]string, len(xs.auxSucc[nodeID]))
+		copy(outgoing, xs.auxSucc[nodeID])
+		sort.Strings(outgoing)
+		for _, to := range outgoing {
 			foundKey = xEdgeKey{from: nodeID, to: to}
 			if xs.auxEdges[foundKey] != nil {
 				isOutEdge = true
@@ -1290,9 +1302,12 @@ func (xs *xSimplexState) removeAuxSubtreeLeaves() {
 			}
 		}
 
-		// Check incoming edges if no outgoing found
+		// Check incoming edges if no outgoing found (sorted)
 		if !found {
-			for _, from := range xs.auxPred[nodeID] {
+			incoming := make([]string, len(xs.auxPred[nodeID]))
+			copy(incoming, xs.auxPred[nodeID])
+			sort.Strings(incoming)
+			for _, from := range incoming {
 				foundKey = xEdgeKey{from: from, to: nodeID}
 				if xs.auxEdges[foundKey] != nil {
 					isOutEdge = false
@@ -1449,6 +1464,15 @@ func (xs *xSimplexState) xFeasibleTree() *xSpanningTree {
 		return tree
 	}
 
+	// Sort edge keys ONCE for determinism (not inside loop!)
+	edgeKeys := make([]xEdgeKey, 0, len(xs.auxEdges))
+	for key := range xs.auxEdges {
+		edgeKeys = append(edgeKeys, key)
+	}
+	sort.Slice(edgeKeys, func(i, j int) bool {
+		return xEdgeKeyLess(edgeKeys[i], edgeKeys[j])
+	})
+
 	// Start with first node as root
 	root := nodeIDs[0]
 	tree.root = root
@@ -1463,15 +1487,6 @@ func (xs *xSimplexState) xFeasibleTree() *xSpanningTree {
 		minSlack := math.Inf(1)
 		treeToNonTree := true
 		found := false
-
-		// Get sorted edge keys for determinism
-		edgeKeys := make([]xEdgeKey, 0, len(xs.auxEdges))
-		for key := range xs.auxEdges {
-			edgeKeys = append(edgeKeys, key)
-		}
-		sort.Slice(edgeKeys, func(i, j int) bool {
-			return xEdgeKeyLess(edgeKeys[i], edgeKeys[j])
-		})
 
 		for _, key := range edgeKeys {
 			inTreeFrom := tree.nodes[key.from] != nil
@@ -1566,7 +1581,11 @@ func (t *xSpanningTree) initLowLim() {
 		visited[v] = true
 
 		// Visit children (neighbors except parent) using adjacency list
-		for _, neighbor := range t.adj[v] {
+		// Sort for deterministic DFS order
+		neighbors := make([]string, len(t.adj[v]))
+		copy(neighbors, t.adj[v])
+		sort.Strings(neighbors)
+		for _, neighbor := range neighbors {
 			if !visited[neighbor] {
 				counter = dfs(neighbor, v)
 			}
@@ -1604,8 +1623,11 @@ func (t *xSpanningTree) postorderNodes() []string {
 	var dfs func(v string)
 	dfs = func(v string) {
 		visited[v] = true
-		// Use adjacency list for O(1) neighbor lookup
-		for _, neighbor := range t.adj[v] {
+		// Use adjacency list, sorted for deterministic DFS order
+		neighbors := make([]string, len(t.adj[v]))
+		copy(neighbors, t.adj[v])
+		sort.Strings(neighbors)
+		for _, neighbor := range neighbors {
 			if !visited[neighbor] {
 				dfs(neighbor)
 			}
@@ -1652,26 +1674,23 @@ func (xs *xSimplexState) assignCutValue(v string) {
 		cutValue = edge.weight
 	}
 
-	// Process all edges incident to v (except the edge to parent)
-	for key, edge := range xs.auxEdges {
-		if key.from != v && key.to != v {
-			continue
-		}
-
-		isOutEdge := key.from == v
-		var other string
-		if isOutEdge {
-			other = key.to
-		} else {
-			other = key.from
-		}
-
+	// Process outgoing edges from v (using adjacency list for O(degree) instead of O(E))
+	// Sort for determinism since adjacency lists are built from map iteration
+	outgoing := make([]string, len(xs.auxSucc[v]))
+	copy(outgoing, xs.auxSucc[v])
+	sort.Strings(outgoing)
+	for _, other := range outgoing {
 		if other == parent {
 			continue
 		}
+		key := xEdgeKey{from: v, to: other}
+		edge := xs.auxEdges[key]
+		if edge == nil {
+			continue
+		}
 
-		// pointsToHead: does this edge point in the same direction as the tree edge?
-		pointsToHead := isOutEdge == childIsTail
+		// isOutEdge=true, pointsToHead = true == childIsTail
+		pointsToHead := childIsTail
 
 		if pointsToHead {
 			cutValue += edge.weight
@@ -1681,7 +1700,44 @@ func (xs *xSimplexState) assignCutValue(v string) {
 
 		// If this is a tree edge to a child, propagate its cut value
 		if xs.tree.isTreeEdge(key) && xs.tree.nodes[other] != nil && xs.tree.nodes[other].parent == v {
-			// Use ok idiom since cut value of 0 is valid (balanced edge)
+			childCut, ok := xs.tree.cutValues[xEdgeKey{from: other, to: v}]
+			if !ok {
+				childCut = xs.tree.cutValues[xEdgeKey{from: v, to: other}]
+			}
+			if pointsToHead {
+				cutValue -= childCut
+			} else {
+				cutValue += childCut
+			}
+		}
+	}
+
+	// Process incoming edges to v (using adjacency list for O(degree) instead of O(E))
+	// Sort for determinism since adjacency lists are built from map iteration
+	incoming := make([]string, len(xs.auxPred[v]))
+	copy(incoming, xs.auxPred[v])
+	sort.Strings(incoming)
+	for _, other := range incoming {
+		if other == parent {
+			continue
+		}
+		key := xEdgeKey{from: other, to: v}
+		edge := xs.auxEdges[key]
+		if edge == nil {
+			continue
+		}
+
+		// isOutEdge=false, pointsToHead = false == childIsTail
+		pointsToHead := !childIsTail
+
+		if pointsToHead {
+			cutValue += edge.weight
+		} else {
+			cutValue -= edge.weight
+		}
+
+		// If this is a tree edge to a child, propagate its cut value
+		if xs.tree.isTreeEdge(key) && xs.tree.nodes[other] != nil && xs.tree.nodes[other].parent == v {
 			childCut, ok := xs.tree.cutValues[xEdgeKey{from: other, to: v}]
 			if !ok {
 				childCut = xs.tree.cutValues[xEdgeKey{from: v, to: other}]

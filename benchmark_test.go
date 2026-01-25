@@ -73,6 +73,7 @@ func TestBenchmarkReport(t *testing.T) {
 		{"Wide", buildWideGraph},
 		{"Deep", buildDeepGraph},
 		{"Medium", buildMediumGraph},
+		{"CHDI", buildCHDIGraph},
 	}
 
 	results := make([]benchResult, len(profiles))
@@ -225,6 +226,97 @@ func buildMediumGraph() *Graph {
 	return g
 }
 
+// buildCHDIGraph builds a graph structure similar to the CHDI QuickBase schema:
+// - 109 tables (nodes)
+// - Several hub tables with 50-200+ relationships
+// - Mix of hub tables and leaf tables
+// - Self-referencing relationships
+func buildCHDIGraph() *Graph {
+	g := NewGraph()
+
+	// Define hub tables (high connectivity) - these mirror the actual CHDI hubs
+	hubs := []struct {
+		name       string
+		childEdges int
+		parentEdges int
+	}{
+		{"AgreementWorkflows", 92, 111},      // 203 total relationships
+		{"PaymentWorkflows", 120, 6},          // 126 total
+		{"ClinicalStudies", 64, 17},           // 81 total
+		{"ProjectWorkflowDocs", 30, 56},       // 86 total
+		{"ProjectCodes", 4, 58},               // 62 total
+		{"Organizations", 4, 45},              // 49 total
+		{"OrgContacts", 4, 34},                // 38 total
+		{"Materials", 15, 3},                  // 18 total
+		{"MaterialWebSubs", 32, 2},            // 34 total
+		{"AnimalLineWebSubs", 22, 2},          // 24 total
+		{"AnimalLines", 25, 2},                // 27 total
+	}
+
+	// Add hub nodes
+	for _, h := range hubs {
+		g.AddNode(h.name, NodeOptions{Width: 120, Height: 40})
+	}
+
+	// Add regular tables (98 more to reach 109 total)
+	regularTables := 98
+	for i := 0; i < regularTables; i++ {
+		g.AddNode(fmt.Sprintf("Table%d", i), NodeOptions{Width: 80, Height: 30})
+	}
+
+	rng := rand.New(rand.NewSource(42))
+
+	// Connect hubs to each other (mimics cross-hub relationships)
+	for i := 0; i < len(hubs); i++ {
+		for j := i + 1; j < len(hubs); j++ {
+			if rng.Float32() < 0.6 {
+				g.AddEdge(hubs[i].name, hubs[j].name)
+			}
+		}
+	}
+
+	// Connect regular tables to hubs based on hub connectivity
+	regularTableNames := make([]string, regularTables)
+	for i := 0; i < regularTables; i++ {
+		regularTableNames[i] = fmt.Sprintf("Table%d", i)
+	}
+
+	for _, h := range hubs {
+		// Add child edges (hub -> regular tables) - use 50% of actual count
+		targetCount := h.childEdges / 2
+		if targetCount > regularTables {
+			targetCount = regularTables / 2
+		}
+		targets := rng.Perm(regularTables)[:targetCount]
+		for _, t := range targets {
+			g.AddEdge(h.name, regularTableNames[t])
+		}
+
+		// Add parent edges (regular tables -> hub) - use 50% of actual count
+		sourceCount := h.parentEdges / 2
+		if sourceCount > regularTables {
+			sourceCount = regularTables / 2
+		}
+		sources := rng.Perm(regularTables)[:sourceCount]
+		for _, s := range sources {
+			g.AddEdge(regularTableNames[s], h.name)
+		}
+	}
+
+	// Add some inter-table edges (tables referencing other tables)
+	for i := 0; i < regularTables; i++ {
+		edgeCount := rng.Intn(3) // 0-2 edges per table
+		for j := 0; j < edgeCount; j++ {
+			target := rng.Intn(regularTables)
+			if target != i {
+				g.AddEdge(regularTableNames[i], regularTableNames[target])
+			}
+		}
+	}
+
+	return g
+}
+
 // --- Standard Go Benchmarks ---
 
 func BenchmarkLayout_Large(b *testing.B) {
@@ -261,6 +353,14 @@ func BenchmarkLayout_Deep(b *testing.B) {
 
 func BenchmarkLayout_Medium(b *testing.B) {
 	g := buildMediumGraph()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		g.Layout()
+	}
+}
+
+func BenchmarkLayout_CHDI(b *testing.B) {
+	g := buildCHDIGraph()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		g.Layout()

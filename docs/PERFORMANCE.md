@@ -21,6 +21,9 @@ The codebase uses Go concurrency for independent parallel phases (BK alignment, 
 | First-improvement search | `order.go:greedyExchangeWithCache()` | Reduces scan iterations |
 | Deterministic RNG | `state.go` | Reproducible without syscalls |
 | Slice pre-allocation | `order.go`, `route.go` | Eliminates grow-from-zero appends |
+| X Simplex adjacency lists | `simplex.go:assignCutValue()` | O(degree) instead of O(E) per node |
+| X Simplex edge sorting | `simplex.go:xFeasibleTree()` | Sort once outside loop, not per-iteration |
+| X Simplex deterministic iteration | `simplex.go` (multiple) | Sorted map iterations for reproducibility |
 
 ---
 
@@ -83,6 +86,30 @@ Three sort call sites use manual comparison swaps for slices of 2–3 elements i
 | `order.go:twoLayerCrossCount` | `var southEntries []entry` | `make([]entry, 0, len(northLayer)*2)` |
 | `order.go:calculateBarycenter` | `var positions []weightedPos` | `make([]weightedPos, 0, len(neighbors))` |
 | `route.go:findClearVerticalChannel` | `var boundaries []float64` | `make([]float64, 0, 2*len(obstacles)+1)` |
+
+### X Network Simplex Optimizations ✓
+
+**Files:** `simplex.go`
+
+The X Network Simplex algorithm for coordinate assignment was optimized from ~90s to ~12s for CHDI-scale graphs (109 nodes, ~500 edges → 7,181 auxiliary nodes, 10,921 auxiliary edges after transformation).
+
+| Optimization | Before | After | Speedup |
+|--------------|--------|-------|---------|
+| Feasible tree construction | 35.3s | 5.4s | 6.5x |
+| Cut value computation | 2.3s | 15ms | 153x |
+| **Total X Simplex** | ~90s | ~12s | 7.5x |
+
+**Feasible tree (`xFeasibleTree`):** The original implementation sorted edges *inside* the loop for each of 7,181 auxiliary nodes. Moving the edge sort outside the loop eliminates O(N × E log E) redundant sorting.
+
+**Cut value computation (`assignCutValue`):** The original implementation iterated all 10,921 edges to find edges adjacent to each node. Using pre-built `auxSucc`/`auxPred` adjacency lists reduces this from O(N × E) to O(N × avg_degree).
+
+**Determinism:** Multiple sources of non-determinism from Go map iteration order were fixed by sorting keys before iteration:
+- `buildAuxiliaryGraph()`: Sort edges before assigning proxy node IDs
+- `assignCutValue()`: Sort adjacency list iterations
+- `removeAuxSubtreeLeaves()`: Sort initial queue from map
+- `initLowLim()`/`postorderNodes()`: Sort neighbors before DFS traversal
+
+**Anti-stacking threshold:** Raised from 100 to 150 nodes to support CHDI-scale graphs.
 
 ---
 

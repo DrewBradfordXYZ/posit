@@ -84,14 +84,6 @@ type layoutEdge struct {
 	targetSide Side
 }
 
-// separationConstraint requires minimum separation between two same-layer nodes.
-// Used by the iterative stacking prevention algorithm.
-type separationConstraint struct {
-	leftID  string  // Node that should be on the left
-	rightID string  // Node that should be on the right
-	minGap  float64 // Minimum gap between right edge of left and left edge of right
-}
-
 // layoutState holds all internal state during the layout process.
 type layoutState struct {
 	// Configuration
@@ -128,10 +120,6 @@ type layoutState struct {
 	// Reusable buffer for accumulator tree in twoLayerCrossCount.
 	// Avoids repeated allocation in the hot crossing-count loop.
 	treeBuf []float64
-
-	// Separation constraints for stacking prevention.
-	// Auto-generated during iterative coordinate assignment.
-	separationConstraints []separationConstraint
 }
 
 // newLayoutState initializes internal state from a Graph.

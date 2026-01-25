@@ -15,17 +15,21 @@ const maxBlockIterations = 10000
 func (s *layoutState) assignCoordinates() {
 	s.assignYCoordinates()
 
-	// Choose X assignment method based on graph size.
-	// BKThreshold controls when to switch from Brandes-Köpf (optimal)
-	// to simple centering (faster for large graphs).
-	threshold := s.opts.BKThreshold
-	if threshold <= 0 {
-		threshold = 100 // fallback default
-	}
-	if len(s.nodes) > threshold {
-		s.assignXCoordinatesSimple() // Fast for large graphs
-	} else {
-		s.assignXCoordinatesBK() // Optimal for smaller graphs
+	// Choose X assignment method based on algorithm option
+	switch s.opts.XCoordAlgorithm {
+	case XNetworkSimplex:
+		s.assignXCoordinatesNetworkSimplex()
+	default:
+		// XBrandesKopf (default): use BK for small graphs, simple for large
+		threshold := s.opts.BKThreshold
+		if threshold <= 0 {
+			threshold = 100 // fallback default
+		}
+		if len(s.nodes) > threshold {
+			s.assignXCoordinatesSimple() // Fast for large graphs
+		} else {
+			s.assignXCoordinatesBK() // Optimal for smaller graphs
+		}
 	}
 }
 
@@ -113,42 +117,14 @@ type conflictKey struct {
 	v, w string
 }
 
-// assignXCoordinatesBK uses the Brandes-Kopf algorithm with optional
-// iterative stacking prevention. When SpreadStackedNodes is enabled,
-// it detects stacked pairs after the initial pass and adds separation
-// constraints, then re-runs BK until no new stacking is found.
+// assignXCoordinatesBK uses the Brandes-Köpf algorithm for horizontal
+// coordinate assignment. This is a 4-pass algorithm that computes
+// vertical alignments and takes the median of results.
 func (s *layoutState) assignXCoordinatesBK() {
 	if len(s.layers) == 0 {
 		return
 	}
-
-	// Maximum iterations for stacking prevention (prevents infinite loops)
-	maxIterations := 3
-	if !s.opts.SpreadStackedNodes {
-		maxIterations = 1 // Single pass when feature is disabled
-	}
-
-	for iteration := 0; iteration < maxIterations; iteration++ {
-		s.runBKPass()
-
-		// Skip constraint detection on final iteration or if feature disabled
-		if !s.opts.SpreadStackedNodes || iteration == maxIterations-1 {
-			break
-		}
-
-		// Detect stacking and generate constraints
-		newConstraints := s.detectStackingConstraints()
-		if len(newConstraints) == 0 {
-			break // No stacking found, converged
-		}
-
-		// Add new constraints (avoid duplicates)
-		for _, c := range newConstraints {
-			if !s.hasConstraint(c) {
-				s.separationConstraints = append(s.separationConstraints, c)
-			}
-		}
-	}
+	s.runBKPass()
 }
 
 // runBKPass executes one pass of the Brandes-Köpf algorithm.
@@ -228,142 +204,6 @@ func (s *layoutState) runBKPass() {
 		}
 	}
 }
-
-// detectStackingConstraints finds stacked node pairs and returns separation
-// constraints that should be added to prevent stacking.
-//
-// Strategy: For each "convergence point" (node receiving edges from multiple
-// same-layer sources), if those sources have overlapping horizontal bounds,
-// add a constraint to spread them apart. Similarly for "divergence points".
-//
-// We check horizontal bound overlap (not center distance) because edges connect
-// at node boundaries (ports), so overlapping bounds cause edge crossings.
-func (s *layoutState) detectStackingConstraints() []separationConstraint {
-	var constraints []separationConstraint
-
-	// Margin for "near overlap" - nodes that are close enough to cause issues
-	margin := s.opts.StackingThreshold
-	if margin <= 0 {
-		margin = 10.0 // Small margin for near-misses
-	}
-
-	// Check each layer for convergence/divergence points
-	for rank := 0; rank < len(s.layers)-1; rank++ {
-		upperLayer := s.layers[rank]
-		lowerLayer := s.layers[rank+1]
-
-		// Find convergence points: nodes in lower layer receiving from multiple upper nodes
-		for _, lowerID := range lowerLayer {
-			lowerNode := s.nodes[lowerID]
-			if lowerNode == nil || lowerNode.isDummy {
-				continue
-			}
-
-			// Find upper nodes that connect to this lower node
-			var sources []*layoutNode
-			for _, upperID := range upperLayer {
-				upperNode := s.nodes[upperID]
-				if upperNode == nil || upperNode.isDummy {
-					continue
-				}
-				if s.hasEdgeBetween(upperID, lowerID) {
-					sources = append(sources, upperNode)
-				}
-			}
-
-			// Check if any pair of sources has overlapping horizontal bounds
-			for i := 0; i < len(sources); i++ {
-				for j := i + 1; j < len(sources); j++ {
-					a, b := sources[i], sources[j]
-
-					if s.horizontalBoundsOverlap(a, b, margin) {
-						// These sources overlap - need separation
-						// Order by current position (left node first)
-						left, right := a, b
-						if a.x > b.x {
-							left, right = b, a
-						}
-						// Required gap: ensure no overlap with margin
-						requiredGap := margin + s.opts.NodeSep/2
-						constraints = append(constraints, separationConstraint{
-							leftID:  left.id,
-							rightID: right.id,
-							minGap:  requiredGap,
-						})
-					}
-				}
-			}
-		}
-
-		// Find divergence points: nodes in upper layer sending to multiple lower nodes
-		for _, upperID := range upperLayer {
-			upperNode := s.nodes[upperID]
-			if upperNode == nil || upperNode.isDummy {
-				continue
-			}
-
-			// Find lower nodes that this upper node connects to
-			var targets []*layoutNode
-			for _, lowerID := range lowerLayer {
-				lowerNode := s.nodes[lowerID]
-				if lowerNode == nil || lowerNode.isDummy {
-					continue
-				}
-				if s.hasEdgeBetween(upperID, lowerID) {
-					targets = append(targets, lowerNode)
-				}
-			}
-
-			// Check if any pair of targets has overlapping horizontal bounds
-			for i := 0; i < len(targets); i++ {
-				for j := i + 1; j < len(targets); j++ {
-					a, b := targets[i], targets[j]
-
-					if s.horizontalBoundsOverlap(a, b, margin) {
-						// These targets overlap - need separation
-						left, right := a, b
-						if a.x > b.x {
-							left, right = b, a
-						}
-						requiredGap := margin + s.opts.NodeSep/2
-						constraints = append(constraints, separationConstraint{
-							leftID:  left.id,
-							rightID: right.id,
-							minGap:  requiredGap,
-						})
-					}
-				}
-			}
-		}
-	}
-
-	return constraints
-}
-
-// horizontalBoundsOverlap checks if two nodes' horizontal bounds overlap
-// (or are within margin of overlapping). This is the correct test for
-// stacking because edges connect at node boundaries, not centers.
-func (s *layoutState) horizontalBoundsOverlap(a, b *layoutNode, margin float64) bool {
-	aLeft := a.x - margin
-	aRight := a.x + a.width + margin
-	bLeft := b.x - margin
-	bRight := b.x + b.width + margin
-
-	// Overlap if one starts before the other ends
-	return aLeft < bRight && bLeft < aRight
-}
-
-// hasConstraint checks if an equivalent constraint already exists.
-func (s *layoutState) hasConstraint(c separationConstraint) bool {
-	for _, existing := range s.separationConstraints {
-		if (existing.leftID == c.leftID && existing.rightID == c.rightID) ||
-			(existing.leftID == c.rightID && existing.rightID == c.leftID) {
-			return true
-		}
-	}
-	return false
-}
-
 
 // getPredecessors returns predecessors as a slice.
 func (s *layoutState) getPredecessors(id string) []string {
@@ -677,18 +517,6 @@ func (s *layoutState) separation(leftID, rightID string) float64 {
 				if padding, ok := s.clusters[rightParent]; ok {
 					sep += padding
 				}
-			}
-		}
-	}
-
-	// Check for auto-generated separation constraints (stacking prevention).
-	// These are added during iterative coordinate assignment when stacked
-	// pairs are detected.
-	for _, c := range s.separationConstraints {
-		if (c.leftID == leftID && c.rightID == rightID) ||
-			(c.leftID == rightID && c.rightID == leftID) {
-			if c.minGap > sep {
-				sep = c.minGap
 			}
 		}
 	}

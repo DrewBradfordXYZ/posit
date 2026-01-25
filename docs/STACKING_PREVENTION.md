@@ -1,15 +1,17 @@
 # Stacking Prevention
 
-**Status: IMPLEMENTED** - Two-layer approach:
-1. **Auto-generated constraints** (fan-in/fan-out cases) - integrated into BK
-2. **Post-hoc nudging** (single-edge cases) - fallback in spread.go
+**Status: FOUNDATION IMPLEMENTED**
+
+Network Simplex for X coordinate assignment is now implemented (`xsimplex.go`). This provides the foundation for anti-stacking constraints. The next step is adding cross-layer separation edges to the auxiliary graph.
+
+See `X_COORDINATE_SIMPLEX.md` for implementation details.
 
 ## Problem
 
 When connected nodes are vertically aligned ("stacked"), edges become vertical lines that look cluttered:
 
 ```
-Stacked (current problem):         Offset (desired):
+Stacked (problem):              Offset (desired):
 
       [A]                              [A]
        |                                 \
@@ -22,34 +24,128 @@ This affects single edges (A→C) and fan-in/fan-out patterns (A,B→C).
 
 ## Why Standard Algorithms Cause This
 
-All coordinate assignment algorithms optimize for **vertical alignment**:
+All coordinate assignment algorithms optimize for **short, straight edges**:
 
 | Algorithm | Optimization Target | Effect |
 |-----------|--------------------| -------|
-| Brandes-Kopf | Align with median neighbor | Causes stacking |
-| Network Simplex | Minimize edge length | Causes stacking |
-| Graphviz | Minimize weighted edge length | Causes stacking |
+| Brandes-Köpf | Align with median neighbor | Causes stacking |
+| Network Simplex | Minimize Σ ω(e)|x_w - x_v| | Causes stacking |
+| Graphviz dot | Minimize weighted edge length | Causes stacking |
 
-Stacking is the *goal* of these algorithms, not a bug. They assume straight edges are always better.
+Stacking is the *goal* of these algorithms, not a bug. The optimization function `min Σ ω(e)|x_w - x_v|` is minimized when connected nodes have the same X coordinate.
 
-## Current Solution: Post-hoc Nudging
+## Current State
 
-`spread.go` implements a post-processing phase that:
+Posit uses Brandes-Köpf (BK) for X coordinate assignment. BK is a fast O(n) algorithm that produces good layouts but has no mechanism for preventing stacking or expressing cross-layer constraints.
 
-1. **Detects stacking** - finds connected node pairs with overlapping horizontal bounds
-2. **Nudges apart** - shifts nodes horizontally so bounds no longer overlap
+## Planned Solution: Network Simplex for X Coordinates
 
-```go
-// Usage
-layout := g.Layout(posit.Options{
-    SpreadStackedNodes: true,   // Enable the feature
-    StackingThreshold:  50,     // Optional: pixels within which nodes are "stacked"
-})
+The Graphviz `dot` algorithm (Gansner et al. 1993, Section 4) uses Network Simplex for **both** ranking (Y) and coordinate assignment (X). Posit currently uses Network Simplex only for ranking.
+
+### The Optimization Problem
+
+The X coordinate assignment problem from the paper:
+
+```
+min   Σ      Ω(e) ω(e) |x_w - x_v|
+    e=(v,w)
+
+subject to: x_b - x_a ≥ ρ(a,b)
 ```
 
-### Why Horizontal Bound Overlap?
+Where:
+- `ρ(a,b)` = minimum separation between adjacent nodes a and b on the same rank
+- `Ω(e)` = internal weight favoring straight long edges (1 for real-real, 2 for real-virtual, 8 for virtual-virtual)
+- `ω(e)` = user-specified edge weight
 
-Edges connect at node **boundaries** (ports), not centers. Two nodes are "stacked" if their horizontal bounds overlap - this causes ambiguous port-side selection and potential edge crossings.
+### The Auxiliary Graph Transformation
+
+The absolute value `|x_w - x_v|` cannot be directly optimized. The paper describes an **auxiliary graph** transformation that converts this into a standard network simplex problem.
+
+**Original graph G:**
+```
+    u ----e---- v
+```
+
+**Auxiliary graph G':**
+```
+         u
+        /
+    n_e     (δ=0, ω=Ω(e)ω(e))
+        \
+         v
+
+    v ---f--- w   (same-rank separation: δ=ρ(v,w), ω=0)
+```
+
+For every edge `e = (u,v)` in G:
+1. Create a new node `n_e`
+2. Add edges `(n_e, u)` and `(n_e, v)` with `δ=0` and `ω=Ω(e)ω(e)`
+
+For every pair of adjacent same-rank nodes `(v,w)`:
+1. Add edge `(v,w)` with `δ=ρ(v,w)` and `ω=0`
+
+**Key insight:** In the optimal solution, one of `(n_e, u)` or `(n_e, v)` has length 0, and the other has length `|x_u - x_v|`. This means `n_e` is assigned `min(x_u, x_v)`, and the cost equals the original absolute value cost.
+
+### Why This Enables Anti-Stacking
+
+The auxiliary graph approach allows us to:
+
+1. **Express cross-layer constraints**: Add edges between nodes on different layers with minimum separation requirements
+
+2. **Penalize vertical alignment**: Add negative-weight edges or penalty terms for stacked configurations
+
+3. **Global optimization**: Network simplex finds the globally optimal solution considering all constraints simultaneously
+
+### Comparison
+
+| Aspect | Brandes-Köpf (Current) | Network Simplex (Planned) |
+|--------|------------------------|---------------------------|
+| Cross-layer constraints | Not possible | Native support |
+| Anti-stacking constraints | Not possible | Add as penalty edges |
+| Optimization scope | Per-layer, heuristic | Global, optimal |
+| Complexity | O(n) | O(n·m) but fast in practice |
+| Node ports | Not native | Supported via δ offsets |
+
+### Node Ports
+
+The paper also describes how to handle "node ports" (edge endpoints offset from node center). For an edge `e = (u,v)` with port offsets `Δu` and `Δv`:
+
+```
+d_e = Δv - Δu  (assuming Δu ≤ Δv)
+
+Cost becomes: Ω(e) ω(e) |x_v - x_u + d_e|
+
+In auxiliary graph: δ(e_u) = d_e, δ(e_v) = 0
+```
+
+This is directly applicable to Posit's port system.
+
+### Implementation Path
+
+1. **Reuse existing simplex** (`simplex.go`) - already implements network simplex for ranking
+2. **Build auxiliary graph** from the positioned graph after ordering
+3. **Add separation edges** for same-rank node pairs with `δ=ρ(a,b)`, `ω=0`
+4. **Add edge-cost edges** for each original edge with the Ω/ω weights
+5. **Run network simplex** to find optimal X coordinates
+6. **Extract positions** from the auxiliary graph solution
+
+### Performance Considerations
+
+From the paper (Section 4.3):
+
+> "The auxiliary graph is considerably larger than the original one. If the original graph has V nodes, E edges, and R ranks, the graph with 'virtual' nodes added has V+D nodes and E+D edges, where D is the number of 'virtual nodes.' The auxiliary graph then has V+E+2D nodes and V+2E+3D-R edges."
+
+The paper describes several optimizations:
+- Construct initial feasible tree using graph structure (not from scratch)
+- Use all same-rank edges as tree edges initially
+- Compute cut values incrementally from leaves inward
+
+These optimizations made the network simplex approach "as fast or faster than the heuristic implementation."
+
+## Detection: Horizontal Bound Overlap
+
+When implementing anti-stacking, detection should use horizontal bound overlap (not center distance) because edges connect at node **boundaries** (ports):
 
 ```
 Correct detection (horizontal bounds overlap):
@@ -64,156 +160,15 @@ Wrong detection (center distance):
   But nodes still overlap! Centers ignore width.
 ```
 
-```go
-// Correct: check if horizontal bounds overlap
-func horizontalBoundsOverlap(a, b *layoutNode, margin float64) bool {
-    aLeft := a.x - margin
-    aRight := a.x + a.width + margin
-    bLeft := b.x - margin
-    bRight := b.x + b.width + margin
-    return aLeft < bRight && bLeft < aRight
-}
-```
-
-### Limitations
-
-| Issue | Impact |
-|-------|--------|
-| Fixed 15px margin | May be too much or too little |
-| Doesn't use optimizer | Fights against BK instead of working with it |
-| May create new conflicts | Nudging one pair can stack another |
-| Single pass | Doesn't iterate to convergence |
-
-## Auto-Generated Constraints (Implemented)
-
-For fan-in/fan-out cases, we use **constraint-based re-layout**:
-
-```
-Standard Approach (MSAGL):     Posit Approach:
-User specifies constraints  →  Algorithm auto-detects stacking
-Single pass with constraints → Multi-pass: layout → analyze → constrain → re-layout
-"Do what I say"             →  "Do what looks good"
-```
-
-### Algorithm
-
-```go
-func (s *layoutState) assignXCoordinatesWithConstraints() {
-    // Pass 1: Standard BK
-    s.assignXCoordinatesBK()
-
-    for iteration := 0; iteration < maxIterations; iteration++ {
-        // Detect stacking
-        stackedPairs := s.detectStackedPairs()
-        if len(stackedPairs) == 0 {
-            break // Converged
-        }
-
-        // Auto-generate separation constraints
-        for _, pair := range stackedPairs {
-            s.addSeparationConstraint(pair.a, pair.b, minSeparation)
-        }
-
-        // Re-run BK - separation() now enforces constraints
-        s.assignXCoordinatesBK()
-    }
-}
-```
-
-### Benefits Over Pure Post-hoc Nudging
-
-| Aspect | Post-hoc Nudge Only | With Constraints |
-|--------|---------------------|------------------|
-| Uses BK optimization | No | Yes |
-| Considers full graph | No | Yes |
-| Margin calculation | Fixed 15px | Algorithm-determined |
-| Creates new conflicts | Possible | No (holistic) |
-| Convergence | Single pass | Iterates until stable |
-
-### Integration Point
-
-The `separation()` function (`position.go:479-515`) is called for every pair of adjacent same-layer nodes during BK compaction. We add constraint checking there:
-
-```go
-func (s *layoutState) separation(leftID, rightID string) float64 {
-    // ... existing NodeSep, dummy, cluster logic ...
-
-    // Check for auto-generated separation constraints
-    for _, c := range s.separationConstraints {
-        if c.matches(leftID, rightID) {
-            sep = max(sep, c.minGap)
-        }
-    }
-
-    return left.width/2 + sep + right.width/2
-}
-```
-
-### Key Insight: Same-Layer Conversion
-
-`separation()` only controls same-layer spacing. For cross-layer stacking (A in layer 0, C in layer 1), we need to convert to same-layer constraints:
-
-```
-Cross-layer stacking:           Same-layer constraint:
-
-Layer 0:  [A]  [B]              Constraint: "A and B need more separation"
-           \  /                  (so their edges to C don't cross)
-Layer 1:   [C]
-```
-
-When A and B are both stacked over C, spreading A and B apart in layer 0 creates diagonal edges that don't cross.
-
-## Implementation Details
-
-### Phase Timing
-
-The spread phase runs AFTER `addDummyNodes()`:
-
-```
-Phase 1: Cycle removal
-Phase 2: Ranking (layer assignment)
-Phase 3: addDummyNodes() ← REMOVES long edges, creates dummy chains
-Phase 4: Crossing minimization
-Phase 5a: Coordinate assignment (BK)
-Phase 5b: spreadStackedNodes() ← s.edges doesn't have long edges!
-Phase 6: Edge routing
-```
-
-**Important**: Long edges are removed from `s.edges` and replaced with dummy chains. Detection must check both `s.edges` (short edges) and `s.dummyChains` (long edges):
-
-```go
-// Also collect real-to-real pairs from dummy chains (long edges)
-for _, firstDummy := range s.dummyChains {
-    dummy := s.nodes[firstDummy]
-    if dummy == nil || dummy.edgeLabel == nil {
-        continue
-    }
-    origKey := dummy.edgeLabel.key  // Has original source and target
-    pairs = append(pairs, realPair{origKey.from, origKey.to})
-}
-```
-
-### Decision: Which Node to Move
-
-When A is stacked over C, we could move either. Factors:
-
-| Factor | Prefer Moving |
-|--------|---------------|
-| Lower degree | Move node with fewer connections |
-| More space available | Move node with room to shift |
-| Not in alignment block | Move node that's block root |
-| Minimize cascade | Move node affecting fewer others |
-
 ## Files
 
 | File | Purpose |
 |------|---------|
-| `spread.go` | Current post-hoc nudging implementation |
-| `position.go` | BK coordinate assignment, `separation()` function |
-| `state.go` | Layout pipeline, will hold constraint storage |
+| `position.go` | Brandes-Köpf coordinate assignment (current) |
+| `simplex.go` | Network Simplex (currently ranking only, future: X coordinates) |
 
 ## References
 
-- Brandes & Kopf (2001): Fast and simple horizontal coordinate assignment
-- Gansner et al. (1993): A technique for drawing directed graphs
-- ELK Layered: https://eclipse.dev/elk/reference/algorithms/org-eclipse-elk-layered.html
+- **Gansner, Koutsofios, North, Vo (1993)**: "A Technique for Drawing Directed Graphs" - IEEE TSE Vol. 19 No. 3. Section 4 describes the auxiliary graph technique for X coordinates. [`literature/TSE93-gansner-technique-drawing-directed-graphs.pdf`](../literature/TSE93-gansner-technique-drawing-directed-graphs.pdf)
+- **Brandes & Köpf (2001)**: "Fast and Simple Horizontal Coordinate Assignment" - Current algorithm for X coordinates
+- **ELK Layered**: https://eclipse.dev/elk/reference/algorithms/org-eclipse-elk-layered.html

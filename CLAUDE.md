@@ -22,8 +22,8 @@ These tests enforce the contract across 11 graph topologies. If they fail, the c
 - `state.go` — Internal layout pipeline and `buildLayout()` (where output is constructed)
 - `order.go` — Crossing minimization
 - `rank.go` — Layer assignment
-- `position.go` — Coordinate assignment (Brandes-Kopf)
-- `spread.go` — Spread stacked nodes for edge clarity (novel algorithm)
+- `simplex.go` — Network Simplex for Y ranking and X coordinates (Gansner et al. 1993)
+- `position.go` — Coordinate assignment (Brandes-Köpf default, or X simplex)
 - `overlap.go` — Cross-layer overlap resolution
 - `route.go` — Edge routing
 - `port.go` — Port offset computation
@@ -38,6 +38,6 @@ go test -bench=. -count=5     # Performance (use benchstat to compare)
 
 ## Architecture
 
-The layout pipeline runs in phases: cycle removal → ranking → dummy nodes → crossing minimization → coordinate assignment → cross-layer overlap resolution → spread stacked nodes → port computation → edge routing. Each phase is a method on `layoutState` in `state.go`.
+The layout pipeline runs in phases: cycle removal → ranking → dummy nodes → crossing minimization → coordinate assignment → cross-layer overlap resolution → port computation → edge routing. Each phase is a method on `layoutState` in `state.go`.
 
 The algorithm is deterministic: same input always produces same output. There is no randomness.

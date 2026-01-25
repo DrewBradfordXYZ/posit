@@ -162,6 +162,18 @@ const (
 	PackVertical
 )
 
+// XCoordAlgorithm specifies which algorithm to use for X coordinate assignment.
+type XCoordAlgorithm int
+
+const (
+	// XBrandesKopf uses the Brandes-Köpf 4-pass algorithm (default).
+	// Fast O(n) heuristic that works well for most graphs.
+	XBrandesKopf XCoordAlgorithm = iota
+	// XNetworkSimplex uses network simplex with auxiliary graph (Gansner et al. 1993).
+	// Globally optimal but slower. Enables cross-layer constraints for anti-stacking.
+	XNetworkSimplex
+)
+
 // Options configures the layout algorithm.
 type Options struct {
 	// Direction of the layout (default: TopToBottom)
@@ -218,19 +230,11 @@ type Options struct {
 	// Default: 0 (disabled, uses fixed RankSep only).
 	NodeNodeBetweenLayers float64
 
-	// SpreadStackedNodes enables horizontal spreading of nodes that are
-	// nearly vertically aligned ("stacked"). When nodes are stacked, port-side
-	// selection becomes ambiguous, causing edge crossings. Spreading nodes
-	// apart horizontally creates unambiguous port-side selection.
-	// Default: false (disabled).
-	SpreadStackedNodes bool
-
-	// StackingThreshold is the X-distance within which nodes are considered
-	// "stacked" (nearly vertically aligned). Nodes with centers within this
-	// distance of a shared target are candidates for spreading.
-	// Default: 0 (auto-calculate as 50% of average node width).
-	// Only used when SpreadStackedNodes is true.
-	StackingThreshold float64
+	// XCoordAlgorithm selects the X coordinate assignment method.
+	// Default: XBrandesKopf (fast heuristic).
+	// XNetworkSimplex provides globally optimal results and supports
+	// cross-layer constraints but is slower for large graphs.
+	XCoordAlgorithm XCoordAlgorithm
 }
 
 // DefaultOptions returns sensible defaults for layout.
@@ -729,10 +733,7 @@ func (g *Graph) LayoutWithError(opts ...Options) (*Layout, error) {
 	// Phase 5a: Resolve cross-layer overlaps (if NodeNodeBetweenLayers > 0)
 	state.resolveCrossLayerOverlaps()
 
-	// Phase 5b: Spread stacked nodes for edge clarity (if SpreadStackedNodes)
-	state.spreadStackedNodes()
-
-	// Phase 5c: Compute auto port offsets (PortFixedSide, PortFixedOrder)
+	// Phase 5b: Compute auto port offsets (PortFixedSide, PortFixedOrder)
 	state.computePortOffsets()
 
 	// Phase 5d: Pack disconnected components
@@ -843,7 +844,6 @@ func (g *Graph) IncrementalLayout(base *Layout, changes IncrementalOptions, opts
 	}
 
 	state.resolveCrossLayerOverlaps()
-	state.spreadStackedNodes()
 	state.computePortOffsets()
 	state.packComponents()
 	state.routeEdges()

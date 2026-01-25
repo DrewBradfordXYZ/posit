@@ -13,7 +13,7 @@ Improvements identified from code review comparing Posit's implementation agains
 | Subtree removal | Medium | Medium | ✅ Done |
 | O(1) swap-delete for adjacency | High | Low | ✅ Done |
 | Leave edge search limit | Medium | Low | ✅ Done |
-| Incremental cut values | Medium | High | ⏸️ Deferred |
+| Incremental cut values | Medium | High | ✅ Done |
 | Cached sorted lists | Low | Low | ⬚ Todo |
 | Generics consolidation | Low | High | ⬚ Todo |
 
@@ -27,7 +27,7 @@ Improvements identified from code review comparing Posit's implementation agains
 
 **Leave edge search limit (Done):** Both Y and X simplex `leaveEdge()` functions now stop after finding 30 negative cut value candidates (following Graphviz's SEARCHSIZE heuristic). Returns the most negative found for better convergence.
 
-**Incremental cut values (Deferred):** Initial implementation following Graphviz's `invalidate_path()` approach was attempted but produced incorrect results due to complex edge direction tracking during cut value propagation. The ELK implementation also uses full recompute with a TODO noting this optimization. Deferred for future work - the current full recompute is correct and benefits from adjacency list speedup.
+**Incremental cut values (Done):** Following Graphviz's `invalidate_path()` approach, `treeUpdate()` walks from endpoints to LCA updating cut values along the path, and `invalidatePath()` marks affected nodes for DFS recomputation. The key insight is the direction flip logic: when walking up the tree, the sign of cut value updates depends on whether we're on the "from" or "to" side of each edge. This provides an additional 30.6% speedup, bringing total improvement to 51% faster than baseline.
 
 ---
 
@@ -88,7 +88,7 @@ Detailed analysis of how Graphviz, ELK, and dagre implement network simplex opti
 
 | Feature | Graphviz | ELK | dagre | Posit (current) |
 |---------|----------|-----|-------|-----------------|
-| Incremental cut values | ✅ `invalidate_path()` | ❌ Full recompute | ❌ Full recompute | ❌ Full recompute |
+| Incremental cut values | ✅ `invalidate_path()` | ❌ Full recompute | ❌ Full recompute | ✅ `treeUpdate()` |
 | Subtree removal | ❌ | ✅ (≥40 nodes) | ❌ | ✅ (≥40 nodes) |
 | Adjacency lists | ✅ | ✅ | ❌ | ✅ |
 | O(1) adjacency removal | ✅ swap-delete | ✅ edge-centric | ❌ | ✅ swap-delete |
@@ -126,24 +126,21 @@ The `removeFromSlice()` helper now uses Graphviz's swap-with-last-element patter
 
 Both Y and X simplex `leaveEdge()` functions now stop after finding 30 negative cut value candidates (following Graphviz's SEARCHSIZE=30 heuristic). Returns the most negative found for better convergence. Prevents pathological cases on large graphs.
 
+### ✅ Incremental Cut Value Updates (Medium Priority)
+**Commit:** `bd70239`
+
+Following Graphviz's `invalidate_path()` approach:
+- `treeUpdate()` / `xTreeUpdate()`: walks from endpoints to LCA, updating cut values with proper direction handling
+- `invalidatePath()` / `xInvalidatePath()`: marks affected nodes for DFS recomputation
+- `exchangeEdges()`: uses incremental updates instead of full recompute
+
+The key insight is the direction flip logic: when walking up the tree, the sign of cut value updates depends on whether we're on the "from" or "to" side of each edge. Provides an additional 30.6% speedup.
+
 ---
 
 ## Todo
 
-### 1. Incremental Cut Value Updates (Medium Priority - Deferred)
-**Reference:** Graphviz `ns.c` lines 85-112, 631-703
-
-Currently recomputes ALL cut values after each edge exchange. Graphviz only updates cut values along the path between the leaving and entering edges.
-
-**Status:** Attempted implementation produced incorrect results due to complex edge direction tracking. ELK also uses full recompute with a TODO noting this optimization. Deferred until correctness issues can be resolved.
-
-**Complexity reduction:** O(n+m) → O(path length) per iteration
-
-**Expected impact:** 2-10x speedup when many iterations needed
-
----
-
-### 2. Cached Sorted Lists (Low Priority)
+### 1. Cached Sorted Lists (Low Priority)
 
 Currently sorts node/edge lists on every `leaveEdge()` and `enterEdge()` call for determinism.
 
@@ -170,23 +167,24 @@ Y simplex and X simplex have nearly identical tree operations with different typ
 
 ### Benchmark Results (All Optimizations)
 
-Total measured improvement: **29.5% faster overall** (geometric mean across all benchmarks).
+Total measured improvement: **51% faster overall** (geometric mean across all benchmarks).
 
-| Benchmark | Original | Final | Improvement |
+| Benchmark | Baseline | Final | Improvement |
 |-----------|----------|-------|-------------|
-| Y_Chain200 (200 nodes) | 6.35ms | 1.98ms | **69% faster** |
-| X_Simplex_Layered20x5 | 555ms | 211ms | **62% faster** |
-| X_Simplex_Layered10x5 | 62.3ms | 32.7ms | **48% faster** |
-| Y_Layered10x5 | 10.2ms | 6.1ms | **40% faster** |
-| Y_Chain100 (100 nodes) | 2.41ms | 1.48ms | **39% faster** |
-| Y_Layered20x5 | 57.6ms | 35.7ms | **38% faster** |
-| AntiStack_Layered10x5 | 45.7ms | 31.2ms | **32% faster** |
+| X_Simplex_Layered20x5 | 287ms | 69ms | **76% faster** |
+| Y_Layered20x5 | 40.8ms | 19.4ms | **52% faster** |
+| X_Simplex_Layered10x5 | 40.5ms | 15.0ms | **63% faster** |
+| Y_Layered10x5 | 7.6ms | 3.9ms | **49% faster** |
+| AntiStack_Layered10x5 | 34.6ms | 17.0ms | **51% faster** |
+| Y_Chain200 | 2.0ms | 1.8ms | **13% faster** |
+| Y_Diamond25 | 4.2ms | 3.8ms | **11% faster** |
 
 **Optimization breakdown:**
-- Adjacency lists + subtree removal: 23.5% improvement
-- O(1) swap-delete + search limit: additional 7.8% improvement
+- Adjacency lists + subtree removal: ~23% improvement
+- O(1) swap-delete + search limit: additional ~8% improvement
+- Incremental cut values: additional ~31% improvement
 
-Chain graphs benefit most from subtree removal. Layered graphs benefit from both subtree removal and the O(1) swap-delete fix.
+Layered graphs benefit most from the full optimization suite. X simplex sees the largest gains due to the auxiliary graph having more edges.
 
 ### Current Anti-Stacking Limitation
 

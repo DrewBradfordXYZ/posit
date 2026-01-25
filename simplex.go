@@ -325,8 +325,9 @@ func (t *spanningTree) assignCutValue(s *layoutState, v string) {
 		// If this is a tree edge to a child, propagate its cut value
 		if t.isTreeEdge(key) {
 			// Get the cut value of the child tree edge
-			childCutValue := t.cutValues[edgeKey{from: other, to: v}]
-			if childCutValue == 0 {
+			// Use ok idiom since cut value of 0 is valid (balanced edge)
+			childCutValue, ok := t.cutValues[edgeKey{from: other, to: v}]
+			if !ok {
 				childCutValue = t.cutValues[edgeKey{from: v, to: other}]
 			}
 
@@ -1022,8 +1023,9 @@ func (xs *xSimplexState) assignCutValue(v string) {
 
 		// If this is a tree edge to a child, propagate its cut value
 		if xs.tree.isTreeEdge(key) && xs.tree.nodes[other] != nil && xs.tree.nodes[other].parent == v {
-			childCut := xs.tree.cutValues[xEdgeKey{from: other, to: v}]
-			if childCut == 0 {
+			// Use ok idiom since cut value of 0 is valid (balanced edge)
+			childCut, ok := xs.tree.cutValues[xEdgeKey{from: other, to: v}]
+			if !ok {
 				childCut = xs.tree.cutValues[xEdgeKey{from: v, to: other}]
 			}
 			if pointsToHead {

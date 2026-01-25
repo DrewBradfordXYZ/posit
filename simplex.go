@@ -81,10 +81,13 @@ func (t *spanningTree) removeEdge(key edgeKey) {
 }
 
 // removeFromSlice removes the first occurrence of val from slice.
+// removeFromSlice removes val from slice using O(1) swap-delete.
+// Order is not preserved, but that's fine since we sort for determinism elsewhere.
 func removeFromSlice(slice []string, val string) []string {
 	for i, v := range slice {
 		if v == val {
-			return append(slice[:i], slice[i+1:]...)
+			slice[i] = slice[len(slice)-1] // Swap with last element
+			return slice[:len(slice)-1]    // Shrink slice (no shift needed)
 		}
 	}
 	return slice
@@ -357,6 +360,11 @@ func (t *spanningTree) assignCutValue(s *layoutState, v string) {
 }
 
 // leaveEdge finds a tree edge with negative cut value.
+// leaveEdgeSearchLimit caps how many negative cut value edges we examine.
+// After finding this many candidates, we return the best found so far.
+// This follows Graphviz's SEARCHSIZE heuristic to prevent pathological cases.
+const leaveEdgeSearchLimit = 30
+
 func (t *spanningTree) leaveEdge() (edgeKey, bool) {
 	// Get nodes in sorted order for deterministic iteration
 	nodeIDs := make([]string, 0, len(t.nodes))
@@ -365,7 +373,11 @@ func (t *spanningTree) leaveEdge() (edgeKey, bool) {
 	}
 	sort.Strings(nodeIDs)
 
-	// Look for edges where child->parent has negative cut value
+	// Look for the edge with most negative cut value, but limit search
+	var best edgeKey
+	bestCut := 0
+	found := 0
+
 	for _, v := range nodeIDs {
 		node := t.nodes[v]
 		if node.parent == "" {
@@ -373,8 +385,19 @@ func (t *spanningTree) leaveEdge() (edgeKey, bool) {
 		}
 		key := edgeKey{from: v, to: node.parent}
 		if cutVal, ok := t.cutValues[key]; ok && cutVal < 0 {
-			return key, true
+			if cutVal < bestCut {
+				best = key
+				bestCut = cutVal
+			}
+			found++
+			if found >= leaveEdgeSearchLimit {
+				break
+			}
 		}
+	}
+
+	if found > 0 {
+		return best, true
 	}
 	return edgeKey{}, false
 }
@@ -1494,6 +1517,11 @@ func (xs *xSimplexState) leaveEdge() (xEdgeKey, bool) {
 	}
 	sort.Strings(nodeIDs)
 
+	// Look for the edge with most negative cut value, but limit search
+	var best xEdgeKey
+	bestCut := 0.0
+	found := 0
+
 	for _, v := range nodeIDs {
 		node := xs.tree.nodes[v]
 		if node == nil || node.parent == "" {
@@ -1501,8 +1529,19 @@ func (xs *xSimplexState) leaveEdge() (xEdgeKey, bool) {
 		}
 		key := xEdgeKey{from: v, to: node.parent}
 		if cut := xs.tree.cutValues[key]; cut < -xSimplexTolerance {
-			return key, true
+			if cut < bestCut {
+				best = key
+				bestCut = cut
+			}
+			found++
+			if found >= leaveEdgeSearchLimit {
+				break
+			}
 		}
+	}
+
+	if found > 0 {
+		return best, true
 	}
 	return xEdgeKey{}, false
 }

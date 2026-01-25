@@ -1,350 +1,199 @@
 # Constraint-Based Stacking Prevention
 
-**Status: TODO** - Design complete, implementation pending.
+**Status: DESIGN NEEDED** - Previous approach was incorrect. Rethinking required.
 
-## Goal
+## The Actual Problem
 
-Replace the post-hoc nudging in `spread.go` with constraint-based separation that integrates directly into the Brandes-Köpf coordinate assignment algorithm.
+When two nodes connected by an edge are **vertically aligned** (stacked), we want to move one of them horizontally to produce a cleaner diagonal edge:
 
-## Two Approaches
+```
+Current (stacked):              Desired (offset):
 
-We support two methods for preventing stacked nodes:
+   [A]                             [A]
+    |                                \
+    |   ← Vertical edge               \   ← Diagonal edge
+    |      (visually cluttered)        \     (cleaner)
+   [C]                                 [C]
+```
 
-| Aspect | Method A: Single-Pass | Method B: Re-Run |
-|--------|----------------------|------------------|
-| When constraints applied | During first BK pass | After detecting actual stacking |
-| Based on | Graph structure (edges) | Actual positions |
-| Performance | Single pass (faster) | 2-3 passes (slower) |
-| Precision | May over-separate | Precise, only fixes real stacking |
-| Complexity | Simpler | More complex |
+The current solution in `spread.go` uses **post-hoc nudging**: after coordinate assignment, detect stacking and nudge nodes apart. This works but fights against the layout algorithm.
 
-**Recommendation**: Try Method A first. Fall back to Method B if needed.
+The goal is to integrate stacking prevention **into** the coordinate assignment algorithm so it finds optimal positions holistically.
 
-## Key Insight
+## Why `separation()` Cannot Solve This
 
-The `separation()` function in `position.go:479-515` is called for every pair of adjacent nodes during horizontal compaction. It already handles NodeSep, dummy penalties, and cluster padding. Adding constraint checks here naturally integrates separation requirements into BK optimization.
+The previous design proposed modifying `separation()` in the Brandes-Köpf algorithm. This was **incorrect** for the single-edge stacking problem.
+
+### What `separation()` Does
+
+`separation(leftID, rightID)` is called for **adjacent nodes in the same layer** to determine minimum horizontal spacing:
+
+```
+Layer 0:   [A]  [B]  [C]   ← separation() controls gaps between A-B, B-C
+                |
+Layer 1:       [D]
+```
+
+It can spread A, B, and C apart within their layer. It **cannot** move A relative to D across layers.
+
+### What It Cannot Do
+
+For a single edge A→C where A and C are in different layers:
+
+```
+Layer 0:   [A]         ← separation() has no say here
+            |
+Layer 1:   [C]         ← A and C are never "adjacent" to separation()
+```
+
+There's no mechanism in `separation()` to push A away from C vertically-aligned position.
+
+### The Fan-In Case Was a Distraction
+
+The previous design focused on fan-in (A,B → C) and fan-out (A → B,C) cases:
+
+```
+[A]    [B]
+  \    /
+   \  /
+   [C]
+```
+
+While spreading A and B apart helps this case, it doesn't address the fundamental problem: a single edge A→C where A is directly above C.
 
 ---
 
-# Method A: Single-Pass (Edge-Based)
+## Approaches That Might Work
 
-**Principle**: If two same-layer nodes both have edges to/from a common node in another layer, they need extra separation to prevent stacking at that shared target.
+### Approach 1: Barycenter/Median Bias
 
-## Why It Works
+During crossing minimization (Phase 4), nodes are positioned based on the barycenter (average position) of their neighbors. We could add a bias term that pushes nodes away from direct vertical alignment.
 
-```
-Layer 0:    [A]    [B]     ← A and B both connect to C
-              \    /
-               \  /
-Layer 1:      [C]
-```
+**Idea**: When computing the target position for A, instead of centering it over C, offset it slightly.
 
-If A and B are too close, their edges to C create crossing chaos. The fix: ensure A and B are separated by at least C's width, so one can be clearly left of C and one clearly right.
+**Challenge**: How much offset? This affects crossing minimization quality.
 
-## Algorithm
+### Approach 2: Repulsion Term in Coordinate Assignment
 
-```
-separation(leftID, rightID):
-  |
-  |-- (1) Base separation (existing NodeSep, dummy, cluster logic)
-  |
-  |-- (2) Find shared cross-layer targets:
-  |       - Nodes that both leftID and rightID connect to
-  |       - In different layers (cross-layer edges)
-  |
-  |-- (3) For each shared target:
-  |       - Increase separation to at least target.width + margin
-  |       - This ensures leftID and rightID can be on opposite sides
-  |
-  |-- (4) Return max of base and constraint-based separation
-```
+Add a "repulsion" force between connected nodes that penalizes vertical alignment during BK coordinate assignment.
 
-## Implementation
+**Idea**: Modify the coordinate assignment objective function to include:
+- Minimize edge length (existing)
+- Minimize crossings (existing)
+- **Penalize vertical alignment** (new)
 
-```go
-func (s *layoutState) separation(leftID, rightID string) float64 {
-    left := s.nodes[leftID]
-    right := s.nodes[rightID]
+**Challenge**: BK doesn't use an explicit objective function - it's heuristic-based.
 
-    // ... existing NodeSep, dummy, cluster logic ...
+### Approach 3: Post-BK Constraint Propagation
 
-    // Single-pass stacking prevention
-    if s.opts.SpreadStackedNodes {
-        sharedTargets := s.findSharedCrossLayerTargets(leftID, rightID)
-        for _, target := range sharedTargets {
-            // Need enough separation so left and right can be on opposite sides of target
-            minSep := target.width + s.opts.NodeSep
-            if minSep > sep {
-                sep = minSep
-            }
-        }
-    }
+After initial BK pass:
+1. Detect stacked pairs (A directly above C)
+2. Decide which direction to offset A (left or right of C)
+3. Propagate this as an **ordering constraint** in the layer
+4. Re-run crossing minimization and/or coordinate assignment
 
-    return left.width/2 + sep + right.width/2
-}
+**Idea**: If A should be "left of C's center", find a same-layer reference point and constrain A to be left of it.
 
-// findSharedCrossLayerTargets returns nodes that both a and b connect to
-// (as successors or predecessors) in different layers.
-func (s *layoutState) findSharedCrossLayerTargets(a, b string) []*layoutNode {
-    nodeA := s.nodes[a]
-    nodeB := s.nodes[b]
-    if nodeA == nil || nodeB == nil {
-        return nil
-    }
+**Challenge**: Converting cross-layer position goals into same-layer ordering constraints.
 
-    var shared []*layoutNode
+### Approach 4: Virtual Alignment Nodes
 
-    // Check successors (nodes that a and b both point to)
-    aSucc := make(map[string]bool)
-    for _, succ := range s.successors[a] {
-        aSucc[succ] = true
-    }
-    for _, succ := range s.successors[b] {
-        if aSucc[succ] {
-            target := s.nodes[succ]
-            if target != nil && target.rank != nodeA.rank {
-                shared = append(shared, target)
-            }
-        }
-    }
+Insert a virtual "alignment target" node in the same layer as A, positioned where we want A to be. Use this as an alignment anchor during BK.
 
-    // Check predecessors (nodes that both point to a and b)
-    aPred := make(map[string]bool)
-    for _, pred := range s.predecessors[a] {
-        aPred[pred] = true
-    }
-    for _, pred := range s.predecessors[b] {
-        if aPred[pred] {
-            source := s.nodes[pred]
-            if source != nil && source.rank != nodeA.rank {
-                shared = append(shared, source)
-            }
-        }
-    }
+**Idea**:
+1. Detect A is stacked over C
+2. Insert virtual node V in layer 0 at position "C.x + offset"
+3. Create alignment affinity between A and V
+4. BK naturally pulls A toward V
 
-    return shared
-}
-```
+**Challenge**: Managing virtual nodes, ensuring they don't interfere with real layout.
 
-## What We Know During Single-Pass
+### Approach 5: Iterative Re-layout with Explicit Constraints (MSAGL-style)
 
-| Information | Available? | How to Use |
-|-------------|------------|------------|
-| Shared target node | Yes | Use target.width for separation |
-| Target's layer | Yes | Confirm it's cross-layer |
-| Exact separation applied | Yes | `target.width + NodeSep` |
-| Which pairs were separated | Yes (can log) | Track for debugging |
+MSAGL supports explicit horizontal constraints: "A must be left of B", "A and B must be adjacent".
 
-## Limitations
+**Idea**:
+1. Run initial layout
+2. Detect stacking
+3. Create explicit constraint: "A.center must be at least X pixels from C.center"
+4. Re-run layout with constraint solver
 
-- May over-separate if nodes wouldn't actually stack (false positives)
-- Doesn't consider actual final positions
-- Only handles direct fan-in/fan-out patterns
+**Challenge**: Requires significant changes to add constraint solving to BK.
 
 ---
 
-# Method B: Re-Run (Position-Based)
+## Current State
 
-**Principle**: Run BK once, detect actual stacking from positions, add constraints, re-run BK.
+The post-hoc nudging in `spread.go` works but is inelegant:
+- Runs after coordinate assignment
+- Uses fixed margins
+- May create new conflicts
+- Doesn't leverage the optimization algorithm
 
-## Algorithm Flow
+## Research Needed
 
-```
-assignCoordinates() [MODIFIED]
-  |
-  |-- (1) Initial BK pass (existing)
-  |
-  |-- (2) Detect stacking (reuse spread.go detection)
-  |       - Find pairs with centers within threshold
-  |       - Include both short edges and dummy chains
-  |
-  |-- (3) If stacking found:
-  |       - Create SeparationConstraint for each stacked pair
-  |       - Re-run BK with constraints (separation() checks them)
-  |       - Iterate up to 3 times until converged
-  |
-  |-- (4) Normalize X coordinates
-```
+Before implementing, we need to understand:
 
-## Data Structures (Method B)
+1. **How do other layout engines handle this?**
+   - MSAGL uses explicit constraints (user-specified)
+   - ELK has various spacing options
+   - Graphviz uses spline routing to work around it
 
-```go
-// In state.go - add to layoutState
+2. **What's the right trade-off?**
+   - Wider layouts vs. straighter edges
+   - Performance cost of re-running phases
+   - Complexity of implementation
 
-type separationConstraint struct {
-    leftID, rightID string   // Same-layer node IDs (ordered by layer position)
-    minGap          float64  // Minimum gap between right edge of left and left edge of right
-}
+3. **Can we modify crossing minimization instead?**
+   - The stacking happens because crossing minimization optimizes for edge straightness
+   - Maybe the fix belongs there, not in coordinate assignment
 
-// Add field to layoutState:
-separationConstraints []separationConstraint
-```
+## MSAGL Research Findings
 
-## Implementation Steps (Method B)
+From analyzing MSAGL.js:
 
-### 1. Add constraint storage to layoutState (`state.go`)
-- Add `separationConstraints []separationConstraint` field
-- Initialize as empty slice in `newLayoutState()`
+### `DeltaBetweenVertices()` (analogous to our `separation()`)
 
-### 2. Modify separation() to check constraints (`position.go`)
-```go
-func (s *layoutState) separation(leftID, rightID string) float64 {
-    // ... existing NodeSep, dummy, cluster logic ...
-
-    // Method B: Check for explicit separation constraints
-    for _, c := range s.separationConstraints {
-        if (c.leftID == leftID && c.rightID == rightID) ||
-           (c.leftID == rightID && c.rightID == leftID) {
-            constraintSep := left.width/2 + c.minGap + right.width/2
-            if constraintSep > sep {
-                sep = constraintSep
-            }
-        }
-    }
-
-    return left.width/2 + sep + right.width/2
+```typescript
+// MSAGL: xCoordsWithAlignment.ts:693-706
+DeltaBetweenVertices(u: number, v: number): number {
+    return (this.anchors[u].rightAnchor + this.anchors[v].leftAnchor + this.nodeSep) * sign
 }
 ```
 
-### 3. Implement constraint-based coordinate assignment (`position.go`)
-- New function: `assignXCoordinatesWithConstraints()`
-- Calls existing `assignXCoordinatesBK()`
-- After first pass, detects stacking and creates constraints
-- Re-runs BK with constraints (up to 3 iterations)
+This only handles same-layer spacing, same as our `separation()`.
 
-### 4. Integrate stacking detection (`spread.go` → `position.go`)
-- Move/refactor detection logic from `nudgeAllStackedEdgePairs()`
-- New function: `detectStackedPairs() []stackedPair`
-- Checks both `s.edges` and `s.dummyChains` for long edges
+### MSAGL's Constraint System
 
-### 5. Convert stacked pairs to same-layer constraints
-- For cross-layer stacking, find same-layer neighbors in alignment blocks
-- Create constraints between same-layer nodes that need separation
+MSAGL has explicit constraint classes that require **manual specification**:
 
-## Convergence Strategy (Method B)
+- `HorizontalConstraintsForSugiyama`: `leftRightConstraints`, `leftRightNeighbors`, `BlockRootToBlock`
+- `VerticalConstraintsForSugiyama`: `sameLayerConstraints`, `upDownConstraints`
 
-1. Run initial BK coordinate assignment
-2. Detect stacked pairs using existing threshold logic
-3. For each stacked pair:
-   - Determine which node should be left vs right (by layer order)
-   - Create constraint: `minGap = threshold + margin`
-4. Re-run BK with constraints
-5. Check if all constraints satisfied
-6. If not, iterate (max 3 times)
-7. Break early if no new stacking detected
+These let users say "A must be left of B" but don't auto-detect stacking.
+
+### Key Insight
+
+MSAGL doesn't auto-solve the stacking problem either. It provides tools for users to manually constrain layouts. Our `SpreadStackedNodes` feature is actually novel - it **auto-detects** and fixes stacking without user intervention.
+
+The question is: can we do this more elegantly than post-hoc nudging?
 
 ---
 
-# Combining Both Methods
+## Next Steps
 
-The methods can be used together for defense in depth:
+1. **Investigate crossing minimization**: Can we bias node ordering during Phase 4 to reduce stacking?
 
-```go
-func (s *layoutState) separation(leftID, rightID string) float64 {
-    // Base separation
-    sep := s.opts.NodeSep
-    // ... existing dummy, cluster logic ...
+2. **Prototype Approach 3**: Try converting stacking detection into same-layer ordering constraints.
 
-    // Method A: Proactive edge-based separation (single-pass)
-    if s.opts.SpreadStackedNodes {
-        for _, target := range s.findSharedCrossLayerTargets(leftID, rightID) {
-            minSep := target.width + s.opts.NodeSep
-            sep = max(sep, minSep)
-        }
-    }
+3. **Benchmark current solution**: How bad is the post-hoc nudging really? Maybe it's good enough.
 
-    // Method B: Explicit constraints from re-run detection
-    for _, c := range s.separationConstraints {
-        if c.matches(leftID, rightID) {
-            sep = max(sep, c.minGap)
-        }
-    }
-
-    return left.width/2 + sep + right.width/2
-}
-```
-
-**Strategy**:
-1. Method A catches most cases in single pass
-2. Method B (if enabled) catches remaining edge cases via re-run
-
----
-
-# Configuration
-
-## Options
-
-```go
-type Options struct {
-    // ... existing ...
-
-    // SpreadStackedNodes enables stacking prevention.
-    // When true, nodes connected by edges are separated to prevent
-    // edge crossing chaos.
-    SpreadStackedNodes bool
-
-    // StackingThreshold is the X-distance within which nodes are
-    // considered "stacked". Default: 50% of average node width.
-    StackingThreshold float64
-
-    // MaxStackingIterations controls Method B re-run limit.
-    // Default: 3. Set to 0 to disable Method B (single-pass only).
-    MaxStackingIterations int
-}
-```
-
-## Files to Modify
-
-| File | Changes |
-|------|---------|
-| `position.go` | Add `findSharedCrossLayerTargets()`, modify `separation()` |
-| `state.go` | Add `separationConstraints` field (for Method B) |
-| `spread.go` | Refactor detection, simplify/remove nudging |
-| `posit.go` | Add `MaxStackingIterations` option |
-
----
-
-# Edge Cases
-
-- **Long edges**: Use dummy chains to find original endpoints
-- **Same-layer edges**: Direct constraint between the two nodes
-- **Already separated**: No extra separation needed
-- **No convergence**: After max iterations, accept current positions
-
-## Verification
-
-```bash
-# All tests pass
-go test -short ./...
-
-# Contract invariants maintained
-go test -run TestContract -v
-
-# Existing spread tests still pass (behavior may differ but results valid)
-go test -run TestSpread -v
-
-# Performance acceptable
-go test -bench=BenchmarkLayout -count=5
-```
-
-## Test Cases
-
-1. **Fan-in**: Multiple sources → single target (stacked sources spread apart)
-2. **Fan-out**: Single source → multiple targets (stacked targets spread apart)
-3. **Long edge**: Stacking across multiple layers (constraint propagates)
-4. **Diamond**: A→B, A→C, B→D, C→D (no false positives)
-5. **Convergence**: Graph that requires 2 iterations to stabilize
-6. **No stacking**: Non-stacked graph produces identical output
-
-## Migration
-
-1. Implement constraint system (no behavior change initially)
-2. Wire in when `SpreadStackedNodes=true`
-3. Keep nudging as fallback (deprecate later)
-4. After validation, remove nudging code entirely
+4. **Study ELK's approach**: ELK has extensive layered layout options - what do they do?
 
 ## References
 
 - [SPREAD_STACKED_NODES_DESIGN.md](SPREAD_STACKED_NODES_DESIGN.md) - Current nudge-based implementation
 - [STACKED_NODE_EDGE_CROSSING_PROBLEM.md](STACKED_NODE_EDGE_CROSSING_PROBLEM.md) - Problem statement
-- `position.go:479-515` - The `separation()` function (injection point)
+- `position.go:479-515` - The `separation()` function (same-layer only)
+- `spread.go` - Current post-hoc nudging solution
+- `_ref/msagljs/` - Microsoft MSAGL.js reference implementation

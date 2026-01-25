@@ -481,7 +481,111 @@ func (t *spanningTree) enterEdge(s *layoutState, leave edgeKey) edgeKey {
 	return best
 }
 
+// getParentEdgeKey returns the edge key connecting v to its parent in the tree.
+// Returns the key and whether v is the "from" node in that key.
+func (t *spanningTree) getParentEdgeKey(v string) (edgeKey, bool) {
+	parent := t.nodes[v].parent
+	if parent == "" {
+		return edgeKey{}, false
+	}
+	// Check both directions since tree edges are stored bidirectionally
+	key := edgeKey{from: v, to: parent}
+	if t.treeEdges[key] {
+		return key, true // v is "from"
+	}
+	return edgeKey{from: parent, to: v}, false // v is "to"
+}
+
+// treeUpdate walks from v toward w, updating cut values along the path.
+// Returns the LCA (lowest common ancestor) of v and w.
+// The dir parameter tracks the direction of propagation for sign handling.
+func (t *spanningTree) treeUpdate(s *layoutState, v, w string, cutvalue int, dir bool) string {
+	// Walk up from v until we reach an ancestor of w
+	// SEQ(low, lim, ulim) checks if lim is in range [low, ulim]
+	for !(t.nodes[v].low <= t.nodes[w].lim && t.nodes[w].lim <= t.nodes[v].lim) {
+		parentEdge, vIsFrom := t.getParentEdgeKey(v)
+		if parentEdge == (edgeKey{}) {
+			break // Reached root
+		}
+
+		// Direction flip: if v is on the "from" side of edge, keep direction; otherwise flip
+		d := dir
+		if !vIsFrom {
+			d = !d
+		}
+
+		// Update cut value based on direction
+		if d {
+			t.cutValues[parentEdge] += cutvalue
+			// Also update reverse direction
+			rev := edgeKey{from: parentEdge.to, to: parentEdge.from}
+			t.cutValues[rev] += cutvalue
+		} else {
+			t.cutValues[parentEdge] -= cutvalue
+			rev := edgeKey{from: parentEdge.to, to: parentEdge.from}
+			t.cutValues[rev] -= cutvalue
+		}
+
+		// Move up to parent
+		v = t.nodes[v].parent
+	}
+	return v // This is the LCA
+}
+
+// invalidatePath marks nodes on the path from toNode to lca as needing DFS recomputation.
+// Nodes are marked by setting low = -1.
+func (t *spanningTree) invalidatePath(lca, toNode string) {
+	for toNode != lca {
+		node := t.nodes[toNode]
+		if node == nil || node.low == -1 {
+			break // Already invalidated or doesn't exist
+		}
+		node.low = -1 // Mark as needing recomputation
+
+		// Move up to parent
+		if node.parent == "" {
+			break
+		}
+		toNode = node.parent
+	}
+}
+
+// initLowLimValuesIncremental recomputes low/lim values starting from root,
+// but skips subtrees where values haven't been invalidated (low != -1).
+func (t *spanningTree) initLowLimValuesIncremental() {
+	counter := 0
+	visited := make(map[string]bool)
+
+	var dfs func(v, parent string) int
+	dfs = func(v, parent string) int {
+		node := t.nodes[v]
+		if node == nil {
+			return counter
+		}
+
+		// Set parent relationship
+		node.parent = parent
+		low := counter
+		visited[v] = true
+
+		// Visit children (neighbors except parent)
+		for _, neighbor := range t.neighbors(v) {
+			if !visited[neighbor] {
+				counter = dfs(neighbor, v)
+			}
+		}
+
+		node.low = low
+		node.lim = counter
+		counter++
+		return counter
+	}
+
+	dfs(t.root, "")
+}
+
 // exchangeEdges swaps leave edge with enter edge and updates the tree.
+// Uses incremental cut value updates following Graphviz's approach.
 func (t *spanningTree) exchangeEdges(s *layoutState, leave, enter edgeKey) {
 	// Calculate slack of entering edge BEFORE modifying anything
 	slack := s.slack(enter)
@@ -515,15 +619,26 @@ func (t *spanningTree) exchangeEdges(s *layoutState, leave, enter edgeKey) {
 		}
 	}
 
+	// Get cut value of leaving edge BEFORE modifying tree
+	leaveCutValue := t.cutValues[leave]
+
 	// Modify the tree structure
 	t.removeEdge(leave)
 	t.addEdge(enter)
 
-	// Recompute low/lim values for the new tree
-	t.initLowLimValues()
+	// Incremental cut value update: walk from both endpoints to LCA
+	lca := t.treeUpdate(s, enter.from, enter.to, leaveCutValue, true)
+	t.treeUpdate(s, enter.to, enter.from, leaveCutValue, false)
 
-	// Recompute cut values
-	t.initCutValues(s)
+	// Set entering edge cut value to negative of leaving edge
+	t.setCutValue(enter.from, enter.to, -leaveCutValue)
+
+	// Invalidate DFS attributes on paths that need recomputation
+	t.invalidatePath(lca, enter.from)
+	t.invalidatePath(lca, enter.to)
+
+	// Recompute low/lim values (full recompute for now - incremental is complex)
+	t.initLowLimValues()
 }
 
 // subtreeRemovalThreshold is the minimum node count for subtree removal optimization.
@@ -1609,7 +1724,72 @@ func (xs *xSimplexState) enterEdge(leave xEdgeKey) xEdgeKey {
 	return best
 }
 
+// getParentEdgeKey returns the edge key connecting v to its parent in the X simplex tree.
+func (t *xSpanningTree) getParentEdgeKey(v string) (xEdgeKey, bool) {
+	node := t.nodes[v]
+	if node == nil || node.parent == "" {
+		return xEdgeKey{}, false
+	}
+	parent := node.parent
+	// Check both directions since tree edges are stored bidirectionally
+	key := xEdgeKey{from: v, to: parent}
+	if t.treeEdges[key] {
+		return key, true // v is "from"
+	}
+	return xEdgeKey{from: parent, to: v}, false // v is "to"
+}
+
+// xTreeUpdate walks from v toward w, updating cut values along the path (X simplex).
+// Returns the LCA (lowest common ancestor) of v and w.
+func (t *xSpanningTree) xTreeUpdate(v, w string, cutvalue float64, dir bool) string {
+	// Walk up from v until we reach an ancestor of w
+	for !(t.nodes[v].low <= t.nodes[w].lim && t.nodes[w].lim <= t.nodes[v].lim) {
+		parentEdge, vIsFrom := t.getParentEdgeKey(v)
+		if parentEdge == (xEdgeKey{}) {
+			break // Reached root
+		}
+
+		// Direction flip: if v is on the "from" side of edge, keep direction; otherwise flip
+		d := dir
+		if !vIsFrom {
+			d = !d
+		}
+
+		// Update cut value based on direction
+		if d {
+			t.cutValues[parentEdge] += cutvalue
+			rev := xEdgeKey{from: parentEdge.to, to: parentEdge.from}
+			t.cutValues[rev] += cutvalue
+		} else {
+			t.cutValues[parentEdge] -= cutvalue
+			rev := xEdgeKey{from: parentEdge.to, to: parentEdge.from}
+			t.cutValues[rev] -= cutvalue
+		}
+
+		// Move up to parent
+		v = t.nodes[v].parent
+	}
+	return v // This is the LCA
+}
+
+// xInvalidatePath marks nodes on the path from toNode to lca as needing DFS recomputation.
+func (t *xSpanningTree) xInvalidatePath(lca, toNode string) {
+	for toNode != lca {
+		node := t.nodes[toNode]
+		if node == nil || node.low == -1 {
+			break // Already invalidated or doesn't exist
+		}
+		node.low = -1 // Mark as needing recomputation
+
+		if node.parent == "" {
+			break
+		}
+		toNode = node.parent
+	}
+}
+
 // exchangeEdges swaps leave with enter and updates tree (X simplex).
+// Uses incremental cut value updates following Graphviz's approach.
 func (xs *xSimplexState) exchangeEdges(leave, enter xEdgeKey) {
 	slack := xs.xSlack(enter)
 
@@ -1641,6 +1821,9 @@ func (xs *xSimplexState) exchangeEdges(leave, enter xEdgeKey) {
 		}
 	}
 
+	// Get cut value of leaving edge BEFORE modifying tree
+	leaveCutValue := xs.tree.cutValues[leave]
+
 	// Update tree structure: remove leave edge
 	delete(xs.tree.treeEdges, leave)
 	delete(xs.tree.treeEdges, xEdgeKey{from: leave.to, to: leave.from})
@@ -1655,9 +1838,20 @@ func (xs *xSimplexState) exchangeEdges(leave, enter xEdgeKey) {
 	xs.tree.adj[enter.from] = append(xs.tree.adj[enter.from], enter.to)
 	xs.tree.adj[enter.to] = append(xs.tree.adj[enter.to], enter.from)
 
-	// Recompute tree values
+	// Incremental cut value update: walk from both endpoints to LCA
+	lca := xs.tree.xTreeUpdate(enter.from, enter.to, leaveCutValue, true)
+	xs.tree.xTreeUpdate(enter.to, enter.from, leaveCutValue, false)
+
+	// Set entering edge cut value to negative of leaving edge
+	xs.tree.cutValues[enter] = -leaveCutValue
+	xs.tree.cutValues[xEdgeKey{from: enter.to, to: enter.from}] = -leaveCutValue
+
+	// Invalidate DFS attributes on paths that need recomputation
+	xs.tree.xInvalidatePath(lca, enter.from)
+	xs.tree.xInvalidatePath(lca, enter.to)
+
+	// Recompute low/lim values
 	xs.tree.initLowLim()
-	xs.initCutValues()
 }
 
 // extractCoordinates copies X values from auxiliary nodes to layout nodes.

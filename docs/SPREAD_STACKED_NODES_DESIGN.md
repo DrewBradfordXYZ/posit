@@ -439,26 +439,64 @@ func (s *layoutState) hasEdgeBetween(a, b string) bool {
 }
 ```
 
-### Nudge Margin Calculation
+### Current Limitation: Post-hoc Nudging
 
-**Current status: Needs refinement**
+**Status: TODO - Replace with constraint-based re-layout**
 
-The current implementation uses a fixed 15px margin when nudging nodes apart:
+The current implementation uses a post-hoc "nudge" approach with a fixed 15px margin. This is a band-aid solution that:
+- Doesn't leverage Posit's optimization algorithms
+- Uses an arbitrary fixed margin
+- May create new conflicts by pushing nodes into others
+- Fights against the layout rather than working with it
 
-```go
-const nudgeMargin = 15.0  // Extra gap beyond boundary
-```
+## TODO: Constraint-Based Re-Layout
 
-The algorithm picks the minimum shift among 4 options:
-1. Move upper-node center to lower-node left edge - margin
-2. Move upper-node center to lower-node right edge + margin
-3. Move lower-node center to upper-node left edge - margin
-4. Move lower-node center to upper-node right edge + margin
+The elegant solution is to **re-run coordinate assignment with stacking constraints** rather than nudging positions afterward.
 
-This may be too aggressive (small margin) or not adaptive enough. Future improvements could:
-- Base margin on node widths (e.g., 10% of smaller node)
-- Consider edge density at the target node
-- Use configurable margin via `Options`
+### Proposed Approach
+
+1. **Detect stacking pairs** after initial coordinate assignment (keep current detection)
+2. **Add minimum-separation constraints** between stacked pairs
+3. **Re-run Brandes-Köpf coordinate assignment** with the new constraints
+4. The algorithm naturally finds optimal positions respecting both edge-straightness AND separation
+
+### Why This Is Better
+
+| Aspect | Current (Nudge) | Proposed (Re-layout) |
+|--------|-----------------|----------------------|
+| Uses Posit's optimization | No | Yes |
+| Considers full graph | No | Yes |
+| Margin calculation | Fixed 15px | Algorithm-determined |
+| May create new conflicts | Yes | No (holistic) |
+| Performance | O(n) single pass | O(n²) but still fast |
+
+### Design Questions to Resolve
+
+1. **Constraint representation**: How do we express "nodes A and B must have centers at least X apart" in Brandes-Köpf?
+   - Option A: Virtual edges with minimum length
+   - Option B: Modified block formation (don't merge stacked nodes)
+   - Option C: Post-alignment adjustment within BK framework
+
+2. **Which phases to re-run**: Just coordinate assignment, or also crossing minimization?
+   - Coordinate assignment only: Faster, preserves node ordering
+   - Include crossing minimization: May find better orderings that avoid stacking
+
+3. **Convergence**: What if new layout creates new stacking?
+   - Iterate until stable (with max iterations)
+   - Or: constraints should guarantee no new stacking
+
+4. **API**: Automatic detection vs. explicit constraints?
+   - Current: Automatic (detect and fix)
+   - Could also expose: `g.AddSeparationConstraint(nodeA, nodeB, minDistance)`
+
+### Implementation Plan
+
+See plan file for detailed implementation steps. Key phases:
+1. Analysis of Brandes-Köpf constraint integration points
+2. Design constraint data structure
+3. Implement constrained coordinate assignment
+4. Replace nudge logic with re-layout trigger
+5. Test convergence and performance
 
 ## Conclusion
 

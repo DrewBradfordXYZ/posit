@@ -273,14 +273,15 @@ Also updated `hasEdgeBetween()` to check both `s.edges` and `s.dummyChains`.
 
 **Status:** Fixed. Long edges like `DocumentTypes → PaymentWorkflows` are now detected as stacked pairs.
 
-### Known Limitation: Nudge Margin
+### Known Limitation: Post-hoc Nudging
 
-The current nudge margin (15px) may be too small for some use cases. The algorithm picks the minimum shift to separate stacked nodes, but doesn't account for:
-- Node width variation
-- Edge density at hub nodes
-- User preference for tighter vs. looser layouts
+**Status: TODO - Replace with constraint-based re-layout**
 
-Future work could make this configurable via `Options.NudgeMargin`.
+The current implementation uses a post-hoc "nudge" with fixed 15px margin. This is a temporary solution that doesn't leverage Posit's optimization algorithms.
+
+**Planned improvement:** Re-run coordinate assignment (Brandes-Köpf) with minimum-separation constraints between stacked pairs. This lets the algorithm find optimal positions holistically rather than fighting against the layout with post-hoc adjustments.
+
+See `SPREAD_STACKED_NODES_DESIGN.md` for the detailed TODO and design questions.
 
 ## References
 

@@ -13,8 +13,9 @@ import (
 // spanningTree holds the tree structure for the network simplex algorithm.
 type spanningTree struct {
 	nodes     map[string]*treeNode
-	treeEdges map[edgeKey]bool // Which edges are in the tree
-	cutValues map[edgeKey]int  // Cut value for each tree edge
+	treeEdges map[edgeKey]bool   // Which edges are in the tree
+	adj       map[string][]string // Adjacency lists for O(1) neighbor lookup
+	cutValues map[edgeKey]int     // Cut value for each tree edge
 	root      string
 }
 
@@ -31,6 +32,7 @@ func newSpanningTree() *spanningTree {
 	return &spanningTree{
 		nodes:     make(map[string]*treeNode),
 		treeEdges: make(map[edgeKey]bool),
+		adj:       make(map[string][]string),
 		cutValues: make(map[edgeKey]int),
 	}
 }
@@ -62,6 +64,9 @@ func (t *spanningTree) addEdge(key edgeKey) {
 	t.treeEdges[key] = true
 	// Also store reverse for undirected tree traversal
 	t.treeEdges[edgeKey{from: key.to, to: key.from}] = true
+	// Update adjacency lists for O(1) neighbor lookup
+	t.adj[key.from] = append(t.adj[key.from], key.to)
+	t.adj[key.to] = append(t.adj[key.to], key.from)
 }
 
 // removeEdge removes an edge from the tree.
@@ -70,6 +75,19 @@ func (t *spanningTree) removeEdge(key edgeKey) {
 	delete(t.treeEdges, edgeKey{from: key.to, to: key.from})
 	delete(t.cutValues, key)
 	delete(t.cutValues, edgeKey{from: key.to, to: key.from})
+	// Update adjacency lists
+	t.adj[key.from] = removeFromSlice(t.adj[key.from], key.to)
+	t.adj[key.to] = removeFromSlice(t.adj[key.to], key.from)
+}
+
+// removeFromSlice removes the first occurrence of val from slice.
+func removeFromSlice(slice []string, val string) []string {
+	for i, v := range slice {
+		if v == val {
+			return append(slice[:i], slice[i+1:]...)
+		}
+	}
+	return slice
 }
 
 // isTreeEdge returns true if the edge is in the spanning tree.
@@ -78,14 +96,9 @@ func (t *spanningTree) isTreeEdge(key edgeKey) bool {
 }
 
 // neighbors returns adjacent nodes in the tree.
+// Uses adjacency lists for O(1) lookup instead of O(edges) iteration.
 func (t *spanningTree) neighbors(v string) []string {
-	var result []string
-	for key := range t.treeEdges {
-		if key.from == v {
-			result = append(result, key.to)
-		}
-	}
-	return result
+	return t.adj[v]
 }
 
 // adjustRanks adjusts ranks of all tree nodes by delta.
@@ -463,9 +476,6 @@ func (t *spanningTree) exchangeEdges(s *layoutState, leave, enter edgeKey) {
 	enterToInTail := t.isDescendant(enter.to, tailNode)
 
 	// Calculate delta to apply to tail subtree to make enter edge tight.
-	// slack = rank[to] - rank[from] - minlen
-	// If enter.from is in tail (we'll add delta to it): new_slack = rank[to] - (rank[from] + delta) - minlen = slack - delta = 0 => delta = slack
-	// If enter.to is in tail (we'll add delta to it): new_slack = (rank[to] + delta) - rank[from] - minlen = slack + delta = 0 => delta = -slack
 	var delta int
 	if enterFromInTail && !enterToInTail {
 		delta = slack
@@ -473,7 +483,7 @@ func (t *spanningTree) exchangeEdges(s *layoutState, leave, enter edgeKey) {
 		delta = -slack
 	}
 
-	// Apply delta to all nodes in the tail subtree
+	// Apply delta to all nodes in the tail subtree (rerank)
 	if delta != 0 {
 		for id := range t.nodes {
 			if t.isDescendant(id, tailNode) {
@@ -482,7 +492,7 @@ func (t *spanningTree) exchangeEdges(s *layoutState, leave, enter edgeKey) {
 		}
 	}
 
-	// Now modify the tree structure
+	// Modify the tree structure
 	t.removeEdge(leave)
 	t.addEdge(enter)
 
@@ -491,6 +501,144 @@ func (t *spanningTree) exchangeEdges(s *layoutState, leave, enter edgeKey) {
 
 	// Recompute cut values
 	t.initCutValues(s)
+}
+
+// subtreeRemovalThreshold is the minimum node count for subtree removal optimization.
+// Based on ELK's empirically determined threshold of 40 nodes.
+const subtreeRemovalThreshold = 40
+
+// removedLeaf represents a leaf node removed for subtree optimization.
+type removedLeaf struct {
+	nodeID    string  // The removed node
+	edgeKey   edgeKey // The single edge connecting it
+	isOutEdge bool    // True if edge goes from this node (nodeID->other)
+	minlen    int     // Edge minlen for position calculation
+}
+
+// removeSubtreeLeaves removes leaf nodes (degree 1) from the graph.
+// Returns the removed leaves in stack order (LIFO for reattachment).
+// This reduces problem size significantly for chain-heavy graphs.
+func (s *layoutState) removeSubtreeLeaves() []removedLeaf {
+	if len(s.nodes) < subtreeRemovalThreshold {
+		return nil
+	}
+
+	var stack []removedLeaf
+
+	// Build degree counts
+	degree := make(map[string]int)
+	for id := range s.nodes {
+		degree[id] = 0
+	}
+	for key := range s.edges {
+		degree[key.from]++
+		degree[key.to]++
+	}
+
+	// Find initial leaves
+	queue := make([]string, 0)
+	for id, d := range degree {
+		if d == 1 {
+			queue = append(queue, id)
+		}
+	}
+
+	// Process leaves until none remain
+	for len(queue) > 0 {
+		nodeID := queue[0]
+		queue = queue[1:]
+
+		// Find the single edge connected to this node
+		var foundEdge edgeKey
+		var isOutEdge bool
+		found := false
+		for key := range s.edges {
+			if key.from == nodeID {
+				foundEdge = key
+				isOutEdge = true
+				found = true
+				break
+			}
+			if key.to == nodeID {
+				foundEdge = key
+				isOutEdge = false
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			continue // Node already removed or isolated
+		}
+
+		// Get the other node
+		other := foundEdge.to
+		if !isOutEdge {
+			other = foundEdge.from
+		}
+
+		// Get minlen for reattachment
+		minlen := 1
+		if edge := s.edges[foundEdge]; edge != nil && edge.minlen > 0 {
+			minlen = edge.minlen
+		}
+
+		// Push to stack for LIFO reattachment
+		stack = append(stack, removedLeaf{
+			nodeID:    nodeID,
+			edgeKey:   foundEdge,
+			isOutEdge: isOutEdge,
+			minlen:    minlen,
+		})
+
+		// Remove from graph
+		delete(s.edges, foundEdge)
+		delete(s.nodes, nodeID)
+
+		// Check if other node became a leaf
+		degree[other]--
+		if degree[other] == 1 {
+			queue = append(queue, other)
+		}
+	}
+
+	return stack
+}
+
+// reattachSubtreeLeaves reattaches previously removed leaf nodes.
+// Nodes are reattached in reverse removal order (LIFO).
+func (s *layoutState) reattachSubtreeLeaves(stack []removedLeaf, savedNodes map[string]*layoutNode, savedEdges map[edgeKey]*layoutEdge) {
+	// Process in reverse order (LIFO)
+	for i := len(stack) - 1; i >= 0; i-- {
+		leaf := stack[i]
+
+		// Restore node
+		s.nodes[leaf.nodeID] = savedNodes[leaf.nodeID]
+
+		// Restore edge
+		s.edges[leaf.edgeKey] = savedEdges[leaf.edgeKey]
+
+		// Compute rank based on parent position
+		var parentID string
+		if leaf.isOutEdge {
+			parentID = leaf.edgeKey.to
+		} else {
+			parentID = leaf.edgeKey.from
+		}
+
+		parentNode := s.nodes[parentID]
+		if parentNode == nil {
+			continue
+		}
+
+		if leaf.isOutEdge {
+			// Edge: leaf -> parent, so leaf.rank + minlen = parent.rank
+			s.nodes[leaf.nodeID].rank = parentNode.rank - leaf.minlen
+		} else {
+			// Edge: parent -> leaf, so parent.rank + minlen = leaf.rank
+			s.nodes[leaf.nodeID].rank = parentNode.rank + leaf.minlen
+		}
+	}
 }
 
 // assignLayersNetworkSimplex uses the network simplex algorithm for optimal ranking.
@@ -502,20 +650,35 @@ func (s *layoutState) assignLayersNetworkSimplex() {
 	// Step 1: Initial feasible ranking using longest path
 	s.assignLayersLongestPath()
 
-	// Save initial ranks in case we need to fallback
+	// Save initial state for subtree removal and fallback
 	initialRanks := make(map[string]int, len(s.nodes))
+	savedNodes := make(map[string]*layoutNode, len(s.nodes))
+	savedEdges := make(map[edgeKey]*layoutEdge, len(s.edges))
 	for id, node := range s.nodes {
 		initialRanks[id] = node.rank
+		savedNodes[id] = node
+	}
+	for key, edge := range s.edges {
+		savedEdges[key] = edge
 	}
 
-	// Step 2: Build feasible spanning tree
+	// Step 2: Remove leaf subtrees for performance (ELK optimization)
+	removedLeaves := s.removeSubtreeLeaves()
+
+	// If graph became empty or trivial after removal, just reattach
+	if len(s.nodes) <= 1 {
+		s.reattachSubtreeLeaves(removedLeaves, savedNodes, savedEdges)
+		return
+	}
+
+	// Step 3: Build feasible spanning tree
 	tree := s.feasibleTree()
 
-	// Step 3: Initialize tree values
+	// Step 4: Initialize tree values
 	tree.initLowLimValues()
 	tree.initCutValues(s)
 
-	// Step 4: Iterate until optimal (no negative cut values)
+	// Step 5: Iterate until optimal (no negative cut values)
 	maxIterations := max(len(s.nodes)*len(s.edges), 100)
 
 	for i := 0; i < maxIterations; i++ {
@@ -532,11 +695,16 @@ func (s *layoutState) assignLayersNetworkSimplex() {
 		tree.exchangeEdges(s, leave, enter)
 	}
 
+	// Step 6: Reattach removed subtrees
+	s.reattachSubtreeLeaves(removedLeaves, savedNodes, savedEdges)
+
 	// Validate result - ensure all edge constraints are satisfied
 	if !s.validateRanks() {
 		// Fallback to initial longest-path ranking
 		for id, rank := range initialRanks {
-			s.nodes[id].rank = rank
+			if s.nodes[id] != nil {
+				s.nodes[id].rank = rank
+			}
 		}
 	}
 }
@@ -605,6 +773,7 @@ type xAuxEdge struct {
 type xSpanningTree struct {
 	nodes     map[string]*xAuxNode
 	treeEdges map[xEdgeKey]bool
+	adj       map[string][]string // Adjacency lists for O(1) neighbor lookup
 	cutValues map[xEdgeKey]float64
 	root      string
 }
@@ -623,6 +792,18 @@ type xSimplexState struct {
 
 	// Spanning tree
 	tree *xSpanningTree
+
+	// Subtree removal state
+	removedAuxLeaves []xRemovedLeaf
+}
+
+// xRemovedLeaf represents a leaf node removed from the auxiliary graph.
+type xRemovedLeaf struct {
+	nodeID    string    // The removed node
+	edgeKey   xEdgeKey  // The single edge connecting it
+	isOutEdge bool      // True if edge goes from this node
+	delta     float64   // Edge delta for position calculation
+	origNode  *layoutNode // Original layout node (nil for proxy nodes)
 }
 
 // assignXCoordinatesNetworkSimplex uses network simplex for X coordinates.
@@ -647,6 +828,17 @@ func (s *layoutState) assignXCoordinatesNetworkSimplex() {
 	// Build auxiliary graph
 	xs.buildAuxiliaryGraph()
 
+	// Remove leaf subtrees for performance (ELK optimization)
+	xs.removeAuxSubtreeLeaves()
+
+	// If graph became empty or trivial, just reattach and exit
+	if len(xs.auxNodes) <= 1 {
+		xs.reattachAuxSubtreeLeaves()
+		xs.extractCoordinates()
+		s.normalizeXCoordinates()
+		return
+	}
+
 	// Build initial feasible tree
 	xs.tree = xs.xFeasibleTree()
 
@@ -669,6 +861,9 @@ func (s *layoutState) assignXCoordinatesNetworkSimplex() {
 
 		xs.exchangeEdges(leave, enter)
 	}
+
+	// Reattach removed subtrees
+	xs.reattachAuxSubtreeLeaves()
 
 	// Extract X coordinates back to layout nodes
 	xs.extractCoordinates()
@@ -837,6 +1032,179 @@ func (xs *xSimplexState) addAuxEdge(from, to string, delta, weight float64) {
 	xs.auxPred[to] = append(xs.auxPred[to], from)
 }
 
+// removeAuxSubtreeLeaves removes leaf nodes from the auxiliary graph.
+// Returns the removed leaves in stack order (LIFO for reattachment).
+func (xs *xSimplexState) removeAuxSubtreeLeaves() {
+	if len(xs.auxNodes) < subtreeRemovalThreshold {
+		return
+	}
+
+	// Build degree counts (both directions since aux graph is directed)
+	degree := make(map[string]int)
+	for id := range xs.auxNodes {
+		degree[id] = len(xs.auxSucc[id]) + len(xs.auxPred[id])
+	}
+
+	// Find initial leaves
+	queue := make([]string, 0)
+	for id, d := range degree {
+		if d == 1 {
+			queue = append(queue, id)
+		}
+	}
+
+	// Process leaves until none remain
+	for len(queue) > 0 {
+		nodeID := queue[0]
+		queue = queue[1:]
+
+		// Skip if already removed
+		if xs.auxNodes[nodeID] == nil {
+			continue
+		}
+
+		// Recalculate degree in case neighbors were removed
+		currentDegree := len(xs.auxSucc[nodeID]) + len(xs.auxPred[nodeID])
+		if currentDegree != 1 {
+			continue
+		}
+
+		// Find the single edge connected to this node
+		var foundKey xEdgeKey
+		var isOutEdge bool
+		found := false
+
+		// Check outgoing edges
+		for _, to := range xs.auxSucc[nodeID] {
+			foundKey = xEdgeKey{from: nodeID, to: to}
+			if xs.auxEdges[foundKey] != nil {
+				isOutEdge = true
+				found = true
+				break
+			}
+		}
+
+		// Check incoming edges if no outgoing found
+		if !found {
+			for _, from := range xs.auxPred[nodeID] {
+				foundKey = xEdgeKey{from: from, to: nodeID}
+				if xs.auxEdges[foundKey] != nil {
+					isOutEdge = false
+					found = true
+					break
+				}
+			}
+		}
+
+		if !found {
+			continue
+		}
+
+		// Get the other node
+		var other string
+		if isOutEdge {
+			other = foundKey.to
+		} else {
+			other = foundKey.from
+		}
+
+		// Get delta for reattachment
+		delta := xs.auxEdges[foundKey].delta
+
+		// Save original node reference if it exists
+		var origNode *layoutNode
+		if xs.auxNodes[nodeID] != nil {
+			origNode = xs.auxNodes[nodeID].origNode
+		}
+
+		// Push to stack for LIFO reattachment
+		xs.removedAuxLeaves = append(xs.removedAuxLeaves, xRemovedLeaf{
+			nodeID:    nodeID,
+			edgeKey:   foundKey,
+			isOutEdge: isOutEdge,
+			delta:     delta,
+			origNode:  origNode,
+		})
+
+		// Remove edge from graph
+		delete(xs.auxEdges, foundKey)
+
+		// Update adjacency lists
+		if isOutEdge {
+			xs.auxSucc[nodeID] = removeFromSlice(xs.auxSucc[nodeID], other)
+			xs.auxPred[other] = removeFromSlice(xs.auxPred[other], nodeID)
+		} else {
+			xs.auxPred[nodeID] = removeFromSlice(xs.auxPred[nodeID], other)
+			xs.auxSucc[other] = removeFromSlice(xs.auxSucc[other], nodeID)
+		}
+
+		// Remove node from graph
+		delete(xs.auxNodes, nodeID)
+
+		// Check if other node became a leaf
+		newDegree := len(xs.auxSucc[other]) + len(xs.auxPred[other])
+		if newDegree == 1 {
+			queue = append(queue, other)
+		}
+	}
+}
+
+// reattachAuxSubtreeLeaves reattaches previously removed leaf nodes.
+func (xs *xSimplexState) reattachAuxSubtreeLeaves() {
+	// Process in reverse order (LIFO)
+	for i := len(xs.removedAuxLeaves) - 1; i >= 0; i-- {
+		leaf := xs.removedAuxLeaves[i]
+
+		// Get parent position
+		var parentID string
+		if leaf.isOutEdge {
+			parentID = leaf.edgeKey.to
+		} else {
+			parentID = leaf.edgeKey.from
+		}
+
+		parentNode := xs.auxNodes[parentID]
+		if parentNode == nil {
+			continue
+		}
+
+		// Compute X based on parent position and delta
+		var x float64
+		if leaf.isOutEdge {
+			// Edge: leaf -> parent, constraint: parent.x >= leaf.x + delta
+			// So: leaf.x = parent.x - delta
+			x = parentNode.x - leaf.delta
+		} else {
+			// Edge: parent -> leaf, constraint: leaf.x >= parent.x + delta
+			// So: leaf.x = parent.x + delta
+			x = parentNode.x + leaf.delta
+		}
+
+		// Restore node
+		xs.auxNodes[leaf.nodeID] = &xAuxNode{
+			id:       leaf.nodeID,
+			x:        x,
+			origNode: leaf.origNode,
+		}
+
+		// Restore edge
+		xs.auxEdges[leaf.edgeKey] = &xAuxEdge{
+			from:  leaf.edgeKey.from,
+			to:    leaf.edgeKey.to,
+			delta: leaf.delta,
+		}
+
+		// Restore adjacency
+		if leaf.isOutEdge {
+			xs.auxSucc[leaf.nodeID] = append(xs.auxSucc[leaf.nodeID], parentID)
+			xs.auxPred[parentID] = append(xs.auxPred[parentID], leaf.nodeID)
+		} else {
+			xs.auxPred[leaf.nodeID] = append(xs.auxPred[leaf.nodeID], parentID)
+			xs.auxSucc[parentID] = append(xs.auxSucc[parentID], leaf.nodeID)
+		}
+	}
+}
+
 // xSlack computes the slack of an auxiliary edge.
 // slack = x[to] - x[from] - delta
 // Positive slack means the edge is longer than required.
@@ -860,6 +1228,7 @@ func (xs *xSimplexState) xFeasibleTree() *xSpanningTree {
 	tree := &xSpanningTree{
 		nodes:     make(map[string]*xAuxNode),
 		treeEdges: make(map[xEdgeKey]bool),
+		adj:       make(map[string][]string),
 		cutValues: make(map[xEdgeKey]float64),
 	}
 
@@ -943,6 +1312,9 @@ func (xs *xSimplexState) xFeasibleTree() *xSpanningTree {
 		// Add edge to tree
 		tree.treeEdges[bestEdge] = true
 		tree.treeEdges[xEdgeKey{from: bestEdge.to, to: bestEdge.from}] = true
+		// Update adjacency lists
+		tree.adj[bestEdge.from] = append(tree.adj[bestEdge.from], bestEdge.to)
+		tree.adj[bestEdge.to] = append(tree.adj[bestEdge.to], bestEdge.from)
 
 		// Add new node to tree
 		var newNodeID string
@@ -980,10 +1352,10 @@ func (t *xSpanningTree) initLowLim() {
 
 		visited[v] = true
 
-		// Visit children (neighbors except parent)
-		for key := range t.treeEdges {
-			if key.from == v && !visited[key.to] {
-				counter = dfs(key.to, v)
+		// Visit children (neighbors except parent) using adjacency list
+		for _, neighbor := range t.adj[v] {
+			if !visited[neighbor] {
+				counter = dfs(neighbor, v)
 			}
 		}
 
@@ -1019,9 +1391,10 @@ func (t *xSpanningTree) postorderNodes() []string {
 	var dfs func(v string)
 	dfs = func(v string) {
 		visited[v] = true
-		for key := range t.treeEdges {
-			if key.from == v && !visited[key.to] {
-				dfs(key.to)
+		// Use adjacency list for O(1) neighbor lookup
+		for _, neighbor := range t.adj[v] {
+			if !visited[neighbor] {
+				dfs(neighbor)
 			}
 		}
 		result = append(result, v)
@@ -1234,10 +1607,14 @@ func (xs *xSimplexState) exchangeEdges(leave, enter xEdgeKey) {
 	delete(xs.tree.treeEdges, xEdgeKey{from: leave.to, to: leave.from})
 	delete(xs.tree.cutValues, leave)
 	delete(xs.tree.cutValues, xEdgeKey{from: leave.to, to: leave.from})
+	xs.tree.adj[leave.from] = removeFromSlice(xs.tree.adj[leave.from], leave.to)
+	xs.tree.adj[leave.to] = removeFromSlice(xs.tree.adj[leave.to], leave.from)
 
 	// Add enter edge
 	xs.tree.treeEdges[enter] = true
 	xs.tree.treeEdges[xEdgeKey{from: enter.to, to: enter.from}] = true
+	xs.tree.adj[enter.from] = append(xs.tree.adj[enter.from], enter.to)
+	xs.tree.adj[enter.to] = append(xs.tree.adj[enter.to], enter.from)
 
 	// Recompute tree values
 	xs.tree.initLowLim()

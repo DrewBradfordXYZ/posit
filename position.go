@@ -233,14 +233,18 @@ func (s *layoutState) runBKPass() {
 // constraints that should be added to prevent stacking.
 //
 // Strategy: For each "convergence point" (node receiving edges from multiple
-// same-layer sources), if those sources are within stacking threshold of each
-// other, add a constraint to spread them apart. Similarly for "divergence points".
+// same-layer sources), if those sources have overlapping horizontal bounds,
+// add a constraint to spread them apart. Similarly for "divergence points".
+//
+// We check horizontal bound overlap (not center distance) because edges connect
+// at node boundaries (ports), so overlapping bounds cause edge crossings.
 func (s *layoutState) detectStackingConstraints() []separationConstraint {
 	var constraints []separationConstraint
 
-	threshold := s.opts.StackingThreshold
-	if threshold <= 0 {
-		threshold = s.averageNodeWidth() * 0.5
+	// Margin for "near overlap" - nodes that are close enough to cause issues
+	margin := s.opts.StackingThreshold
+	if margin <= 0 {
+		margin = 10.0 // Small margin for near-misses
 	}
 
 	// Check each layer for convergence/divergence points
@@ -267,25 +271,24 @@ func (s *layoutState) detectStackingConstraints() []separationConstraint {
 				}
 			}
 
-			// Check if any pair of sources is stacked (centers too close)
+			// Check if any pair of sources has overlapping horizontal bounds
 			for i := 0; i < len(sources); i++ {
 				for j := i + 1; j < len(sources); j++ {
 					a, b := sources[i], sources[j]
-					aCenterX := a.x + a.width/2
-					bCenterX := b.x + b.width/2
-					xDiff := math.Abs(aCenterX - bCenterX)
 
-					if xDiff < threshold {
-						// These sources are stacked - need separation
-						// Order by current position (left, right)
-						leftID, rightID := a.id, b.id
-						if aCenterX > bCenterX {
-							leftID, rightID = b.id, a.id
+					if s.horizontalBoundsOverlap(a, b, margin) {
+						// These sources overlap - need separation
+						// Order by current position (left node first)
+						left, right := a, b
+						if a.x > b.x {
+							left, right = b, a
 						}
+						// Required gap: ensure no overlap with margin
+						requiredGap := margin + s.opts.NodeSep/2
 						constraints = append(constraints, separationConstraint{
-							leftID:  leftID,
-							rightID: rightID,
-							minGap:  threshold + s.opts.NodeSep/2,
+							leftID:  left.id,
+							rightID: right.id,
+							minGap:  requiredGap,
 						})
 					}
 				}
@@ -311,24 +314,22 @@ func (s *layoutState) detectStackingConstraints() []separationConstraint {
 				}
 			}
 
-			// Check if any pair of targets is stacked
+			// Check if any pair of targets has overlapping horizontal bounds
 			for i := 0; i < len(targets); i++ {
 				for j := i + 1; j < len(targets); j++ {
 					a, b := targets[i], targets[j]
-					aCenterX := a.x + a.width/2
-					bCenterX := b.x + b.width/2
-					xDiff := math.Abs(aCenterX - bCenterX)
 
-					if xDiff < threshold {
-						// These targets are stacked - need separation
-						leftID, rightID := a.id, b.id
-						if aCenterX > bCenterX {
-							leftID, rightID = b.id, a.id
+					if s.horizontalBoundsOverlap(a, b, margin) {
+						// These targets overlap - need separation
+						left, right := a, b
+						if a.x > b.x {
+							left, right = b, a
 						}
+						requiredGap := margin + s.opts.NodeSep/2
 						constraints = append(constraints, separationConstraint{
-							leftID:  leftID,
-							rightID: rightID,
-							minGap:  threshold + s.opts.NodeSep/2,
+							leftID:  left.id,
+							rightID: right.id,
+							minGap:  requiredGap,
 						})
 					}
 				}
@@ -337,6 +338,19 @@ func (s *layoutState) detectStackingConstraints() []separationConstraint {
 	}
 
 	return constraints
+}
+
+// horizontalBoundsOverlap checks if two nodes' horizontal bounds overlap
+// (or are within margin of overlapping). This is the correct test for
+// stacking because edges connect at node boundaries, not centers.
+func (s *layoutState) horizontalBoundsOverlap(a, b *layoutNode, margin float64) bool {
+	aLeft := a.x - margin
+	aRight := a.x + a.width + margin
+	bLeft := b.x - margin
+	bRight := b.x + b.width + margin
+
+	// Overlap if one starts before the other ends
+	return aLeft < bRight && bLeft < aRight
 }
 
 // hasConstraint checks if an equivalent constraint already exists.

@@ -1,7 +1,6 @@
 package posit
 
 import (
-	"math"
 	"sort"
 )
 
@@ -117,13 +116,15 @@ func (s *layoutState) nudgeStackedPairs(upperLayer, lowerLayer []string, thresho
 				continue
 			}
 
-			// Check if they're stacked (centers within threshold)
-			upperCenterX := upperNode.x + upperNode.width/2
-			lowerCenterX := lowerNode.x + lowerNode.width/2
-			xDiff := math.Abs(upperCenterX - lowerCenterX)
+			// Check if they're stacked (horizontal bounds overlap)
+			// Edges connect at boundaries, so overlapping bounds = potential crossing
+			upperLeft := upperNode.x - threshold
+			upperRight := upperNode.x + upperNode.width + threshold
+			lowerLeft := lowerNode.x - threshold
+			lowerRight := lowerNode.x + lowerNode.width + threshold
 
-			if xDiff >= threshold {
-				continue // Not stacked
+			if !(upperLeft < lowerRight && lowerLeft < upperRight) {
+				continue // No overlap, not stacked
 			}
 
 			// They're stacked - nudge the upper node so its center is outside
@@ -209,10 +210,16 @@ func (s *layoutState) averageNodeWidth() float64 {
 
 // findStackedSources returns upper-layer nodes that:
 // 1. Have edges to lowerNode
-// 2. Are within 'threshold' X distance of lowerNode's center
-func (s *layoutState) findStackedSources(lowerNode *layoutNode, upperLayer []string, threshold float64) []*layoutNode {
+// 2. Have horizontal bounds that overlap with lowerNode (with margin)
+//
+// We check horizontal bound overlap because edges connect at node boundaries,
+// so overlapping bounds cause ambiguous port-side selection.
+func (s *layoutState) findStackedSources(lowerNode *layoutNode, upperLayer []string, margin float64) []*layoutNode {
 	var stacked []*layoutNode
-	lowerCenterX := lowerNode.x + lowerNode.width/2
+
+	// Lower node bounds (with margin for near-misses)
+	lowerLeft := lowerNode.x - margin
+	lowerRight := lowerNode.x + lowerNode.width + margin
 
 	for _, upperID := range upperLayer {
 		upperNode := s.nodes[upperID]
@@ -228,11 +235,12 @@ func (s *layoutState) findStackedSources(lowerNode *layoutNode, upperLayer []str
 			continue
 		}
 
-		upperCenterX := upperNode.x + upperNode.width/2
-		xDiff := math.Abs(upperCenterX - lowerCenterX)
+		// Upper node bounds (with margin)
+		upperLeft := upperNode.x - margin
+		upperRight := upperNode.x + upperNode.width + margin
 
-		// Node is "stacked" if its center is within threshold of lower node's center
-		if xDiff < threshold {
+		// Check horizontal bound overlap
+		if upperLeft < lowerRight && lowerLeft < upperRight {
 			stacked = append(stacked, upperNode)
 		}
 	}
@@ -242,10 +250,16 @@ func (s *layoutState) findStackedSources(lowerNode *layoutNode, upperLayer []str
 
 // findStackedTargets returns lower-layer nodes that:
 // 1. Have edges from upperNode
-// 2. Are within 'threshold' X distance of upperNode's center
-func (s *layoutState) findStackedTargets(upperNode *layoutNode, lowerLayer []string, threshold float64) []*layoutNode {
+// 2. Have horizontal bounds that overlap with upperNode (with margin)
+//
+// We check horizontal bound overlap because edges connect at node boundaries,
+// so overlapping bounds cause ambiguous port-side selection.
+func (s *layoutState) findStackedTargets(upperNode *layoutNode, lowerLayer []string, margin float64) []*layoutNode {
 	var stacked []*layoutNode
-	upperCenterX := upperNode.x + upperNode.width/2
+
+	// Upper node bounds (with margin for near-misses)
+	upperLeft := upperNode.x - margin
+	upperRight := upperNode.x + upperNode.width + margin
 
 	for _, lowerID := range lowerLayer {
 		lowerNode := s.nodes[lowerID]
@@ -261,11 +275,12 @@ func (s *layoutState) findStackedTargets(upperNode *layoutNode, lowerLayer []str
 			continue
 		}
 
-		lowerCenterX := lowerNode.x + lowerNode.width/2
-		xDiff := math.Abs(upperCenterX - lowerCenterX)
+		// Lower node bounds (with margin)
+		lowerLeft := lowerNode.x - margin
+		lowerRight := lowerNode.x + lowerNode.width + margin
 
-		// Node is "stacked" if its center is within threshold of upper node's center
-		if xDiff < threshold {
+		// Check horizontal bound overlap
+		if lowerLeft < upperRight && upperLeft < lowerRight {
 			stacked = append(stacked, lowerNode)
 		}
 	}
@@ -603,13 +618,15 @@ func (s *layoutState) nudgeAllStackedEdgePairs(threshold float64) {
 		}
 		processed[pair] = true
 
-		// Check if they're stacked
-		fromCenterX := fromNode.x + fromNode.width/2
-		toCenterX := toNode.x + toNode.width/2
-		xDiff := math.Abs(fromCenterX - toCenterX)
+		// Check if they're stacked (horizontal bounds overlap)
+		// Edges connect at boundaries, so overlapping bounds = potential crossing
+		fromLeft := fromNode.x - threshold
+		fromRight := fromNode.x + fromNode.width + threshold
+		toLeft := toNode.x - threshold
+		toRight := toNode.x + toNode.width + threshold
 
-		if xDiff >= threshold {
-			continue // Not stacked
+		if !(fromLeft < toRight && toLeft < fromRight) {
+			continue // No overlap, not stacked
 		}
 
 		// They're stacked! Determine which is "upper" (lower rank = earlier layer)

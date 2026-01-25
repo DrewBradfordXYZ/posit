@@ -36,8 +36,8 @@ Stacking is the *goal* of these algorithms, not a bug. They assume straight edge
 
 `spread.go` implements a post-processing phase that:
 
-1. **Detects stacking** - finds connected node pairs within threshold X distance
-2. **Nudges apart** - shifts nodes horizontally by a fixed margin (15px)
+1. **Detects stacking** - finds connected node pairs with overlapping horizontal bounds
+2. **Nudges apart** - shifts nodes horizontally so bounds no longer overlap
 
 ```go
 // Usage
@@ -47,18 +47,31 @@ layout := g.Layout(posit.Options{
 })
 ```
 
-### How It Works
+### Why Horizontal Bound Overlap?
+
+Edges connect at node **boundaries** (ports), not centers. Two nodes are "stacked" if their horizontal bounds overlap - this causes ambiguous port-side selection and potential edge crossings.
+
+```
+Correct detection (horizontal bounds overlap):
+
+  Node A: [----100px----]
+  Node B:      [----100px----]
+               ↑ overlap = stacked
+
+Wrong detection (center distance):
+
+  centerA ----60px---- centerB
+  But nodes still overlap! Centers ignore width.
+```
 
 ```go
-func (s *layoutState) spreadStackedNodes() {
-    // Collect all connected pairs (short edges + long edges via dummy chains)
-    pairs := s.collectRealPairs()
-
-    for _, pair := range pairs {
-        if s.areStacked(pair.a, pair.b, threshold) {
-            s.nudgeApart(pair.a, pair.b, margin)
-        }
-    }
+// Correct: check if horizontal bounds overlap
+func horizontalBoundsOverlap(a, b *layoutNode, margin float64) bool {
+    aLeft := a.x - margin
+    aRight := a.x + a.width + margin
+    bLeft := b.x - margin
+    bRight := b.x + b.width + margin
+    return aLeft < bRight && bLeft < aRight
 }
 ```
 

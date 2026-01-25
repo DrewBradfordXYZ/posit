@@ -2,7 +2,7 @@
 
 Improvements identified from code review comparing Posit's implementation against Graphviz, ELK, and dagre.
 
-**Note:** These are performance optimizations. Defer until after `STACKING_PREVENTION.md` is complete (anti-stacking constraints are the next feature priority).
+**Note:** Anti-stacking (`STACKING_PREVENTION.md`) is now COMPLETE. These performance optimizations are the next priority to enable anti-stacking on large graphs (currently limited to ≤100 nodes).
 
 ## Status Overview
 
@@ -14,6 +14,81 @@ Improvements identified from code review comparing Posit's implementation agains
 | Incremental cut values | Medium | High | ⬚ Todo |
 | Cached sorted lists | Low | Low | ⬚ Todo |
 | Generics consolidation | Low | High | ⬚ Todo |
+
+---
+
+## Reference Implementation Comparison
+
+Detailed analysis of how Graphviz, ELK, and dagre implement network simplex optimizations.
+
+### Graphviz (Most Mature)
+
+**Location:** `_ref/graphviz/lib/dotgen/ns.c`
+
+**Key optimizations:**
+1. **Incremental cut value updates via `invalidate_path()`** - Only recomputes cut values for nodes on the path between exchanged edges, not the entire tree. This is the single biggest optimization.
+2. **Union-find with path compression** - Uses union-find for O(α(n)) subtree membership tests during feasible tree construction
+3. **Search limit of 999 iterations** - Caps leave edge search to prevent pathological cases
+4. **Immediate tree edge lookup** - Each node stores its parent tree edge directly, avoiding repeated searches
+
+**Architecture:**
+- `init_rank()` - Initial feasible ranking using longest path
+- `feasible_tree()` - Builds initial spanning tree with tight edges
+- `rank()` - Main loop calling `leave_edge()` / `enter_edge()` / `update()` / `rerank()`
+- `cut_value()` + `x_cutval()` - Cut value computation with incremental updates
+- `invalidate_path()` - Marks only affected path for recomputation
+
+### ELK (Clean Java Implementation)
+
+**Location:** `_ref/elk/plugins/org.eclipse.elk.alg.common/src/org/eclipse/elk/alg/common/networksimplex/`
+
+**Key optimizations:**
+1. **Subtree removal** - For graphs ≥40 nodes, removes leaf nodes (degree 1) before simplex, reattaches after. Can reduce problem size by 50%+ on chain-heavy graphs.
+2. **Full cut value recompute** - Unlike Graphviz, ELK recomputes all cut values after each exchange. Has a TODO comment noting they should implement incremental updates.
+3. **Postorder values (low/lim)** - Standard technique for O(1) subtree membership tests
+
+**Architecture:**
+- `NetworkSimplex.java` - Main algorithm with `process()` entry point
+- `NEdge.java` / `NNode.java` - Edge/node wrappers with tree metadata
+- Threshold-based subtree removal (40 nodes)
+- Bounded iteration count
+
+### dagre (Simplest Implementation)
+
+**Location:** `_ref/dagre/lib/rank/network-simplex.js`
+
+**Key characteristics:**
+1. **No optimizations** - Simplest implementation, good for understanding the algorithm
+2. **Full recompute every iteration** - No incremental cut values
+3. **No subtree removal** - Processes full graph always
+4. **Unbounded iterations** - No search limits (can hang on pathological inputs)
+
+**Architecture:**
+- `networkSimplex()` - Main entry point
+- `feasibleTree()` - Initial tree construction
+- `initLowLimValues()` / `initCutValues()` - Full recomputation
+- `leaveEdge()` / `enterEdge()` / `exchangeEdges()` - Standard simplex operations
+
+### Comparison Summary
+
+| Feature | Graphviz | ELK | dagre | Posit (current) |
+|---------|----------|-----|-------|-----------------|
+| Incremental cut values | ✅ `invalidate_path()` | ❌ Full recompute | ❌ Full recompute | ❌ Full recompute |
+| Subtree removal | ❌ | ✅ (≥40 nodes) | ❌ | ❌ |
+| Adjacency lists | ✅ | ✅ | ❌ | ❌ |
+| Iteration limit | ✅ (999) | ✅ | ❌ | ✅ (n×m) |
+| Union-find for tree | ✅ | ❌ | ❌ | ❌ |
+| Postorder (low/lim) | ✅ | ✅ | ✅ | ✅ |
+
+### Implementation Priority (Recommended Order)
+
+Based on impact/effort ratio:
+
+1. **Subtree removal** - Medium effort, 2-10x speedup on chain-heavy graphs
+2. **Incremental cut values** - High effort, 2-10x speedup on iteration-heavy graphs
+3. **Adjacency lists** - Low effort, 2-5x speedup on tree traversals
+4. **Leave edge search limit** - Low effort, prevents pathological hangs
+5. **Better iteration cap** - Low effort, scales with graph structure not n×m
 
 ---
 
@@ -193,6 +268,19 @@ From benchmarks (50-node graph):
 | Network Simplex | ~26.5ms | ~5-10ms |
 
 The optimizations primarily help Network Simplex, which is 42x slower than BK but provides global optimality needed for anti-stacking constraints.
+
+### Current Anti-Stacking Limitation
+
+Anti-stacking is currently disabled for graphs >100 nodes due to performance. The constraint:
+
+```go
+// simplex.go line ~735
+if xs.s.opts.PreventStacking && len(xs.s.nodes) <= 100 {
+    xs.addAntiStackingEdges()
+}
+```
+
+A 107-node, 575-edge graph caused the iteration count to explode (`maxIterations = nodes × edges` = 1.36M). Implementing the optimizations above (especially subtree removal and incremental cut values) would allow raising or removing this limit.
 
 ---
 

@@ -732,7 +732,8 @@ func (xs *xSimplexState) buildAuxiliaryGraph() {
 	}
 
 	// Step 4: Add cross-layer anti-stacking edges (if enabled)
-	if xs.s.opts.PreventStacking {
+	// Skip for large graphs (>100 nodes) as it becomes too slow
+	if xs.s.opts.PreventStacking && len(xs.s.nodes) <= 100 {
 		xs.addAntiStackingEdges()
 	}
 }

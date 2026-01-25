@@ -730,6 +730,77 @@ func (xs *xSimplexState) buildAuxiliaryGraph() {
 			xs.addAuxEdge(leftID, rightID, delta, 0)
 		}
 	}
+
+	// Step 4: Add cross-layer anti-stacking edges (if enabled)
+	if xs.s.opts.PreventStacking {
+		xs.addAntiStackingEdges()
+	}
+}
+
+// addAntiStackingEdges adds separation constraints between connected nodes
+// on adjacent layers to prevent vertical stacking.
+func (xs *xSimplexState) addAntiStackingEdges() {
+	// Get minimum separation (default to NodeSep/2)
+	minSep := xs.s.opts.StackingMinSep
+	if minSep <= 0 {
+		minSep = xs.s.opts.NodeSep / 2
+	}
+
+	// For each edge in the original graph, check if endpoints are on adjacent layers
+	// and add separation constraint if they're close to being stacked
+	for key := range xs.s.edges {
+		fromNode := xs.s.nodes[key.from]
+		toNode := xs.s.nodes[key.to]
+		if fromNode == nil || toNode == nil {
+			continue
+		}
+
+		// Skip if not on adjacent layers
+		layerDiff := toNode.rank - fromNode.rank
+		if layerDiff < 0 {
+			layerDiff = -layerDiff
+		}
+		if layerDiff != 1 {
+			continue // Only constrain direct layer-to-layer connections
+		}
+
+		// Check if nodes are "stacked" (horizontally overlapping or very close)
+		// Use horizontal bounds: [x, x + width]
+		fromLeft := fromNode.x
+		fromRight := fromNode.x + fromNode.width
+		toLeft := toNode.x
+		toRight := toNode.x + toNode.width
+
+		// Overlap exists if ranges intersect
+		// No overlap if: fromRight < toLeft OR toRight < fromLeft
+		overlapping := !(fromRight < toLeft-minSep || toRight < fromLeft-minSep)
+
+		if !overlapping {
+			continue // Already separated enough
+		}
+
+		// Add separation constraint: push the right node further right
+		// Determine which node is on the left (smaller X center)
+		fromCenter := fromNode.x + fromNode.width/2
+		toCenter := toNode.x + toNode.width/2
+
+		var leftID, rightID string
+		var leftNode, rightNode *layoutNode
+		if fromCenter <= toCenter {
+			leftID, rightID = key.from, key.to
+			leftNode, rightNode = fromNode, toNode
+		} else {
+			leftID, rightID = key.to, key.from
+			leftNode, rightNode = toNode, fromNode
+		}
+
+		// Delta = half-widths + minimum separation (center-to-center distance)
+		delta := leftNode.width/2 + rightNode.width/2 + minSep
+
+		// Add constraint edge: rightNode.x >= leftNode.x + delta
+		// Weight = 0 (constraint only, doesn't affect objective)
+		xs.addAuxEdge(leftID, rightID, delta, 0)
+	}
 }
 
 // calcOmega computes the internal edge weight Ω per the paper.

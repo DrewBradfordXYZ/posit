@@ -1,10 +1,24 @@
 # Stacking Prevention
 
-**Status: FOUNDATION IMPLEMENTED**
+**Status: COMPLETE**
 
-Network Simplex for X coordinate assignment is now implemented (`xsimplex.go`). This provides the foundation for anti-stacking constraints. The next step is adding cross-layer separation edges to the auxiliary graph.
+Network Simplex for X coordinate assignment with anti-stacking constraints is implemented in `simplex.go`.
 
-See `X_COORDINATE_SIMPLEX.md` for implementation details.
+## Usage
+
+```go
+layout := g.Layout(posit.Options{
+    XCoordAlgorithm: posit.XNetworkSimplex,
+    PreventStacking: true,
+    // Optional: customize minimum separation (default: NodeSep/2)
+    StackingMinSep:  25,
+})
+```
+
+**Options:**
+- `XCoordAlgorithm: XNetworkSimplex` - Required to enable constraint-based X positioning
+- `PreventStacking: true` - Adds cross-layer separation constraints
+- `StackingMinSep: float64` - Minimum horizontal separation between connected nodes on adjacent layers (default: `NodeSep/2`)
 
 ## Problem
 
@@ -87,22 +101,22 @@ For every pair of adjacent same-rank nodes `(v,w)`:
 
 **Key insight:** In the optimal solution, one of `(n_e, u)` or `(n_e, v)` has length 0, and the other has length `|x_u - x_v|`. This means `n_e` is assigned `min(x_u, x_v)`, and the cost equals the original absolute value cost.
 
-### Why This Enables Anti-Stacking
+### How Anti-Stacking Works
 
-The auxiliary graph approach allows us to:
+The auxiliary graph approach enables anti-stacking by:
 
-1. **Express cross-layer constraints**: Add edges between nodes on different layers with minimum separation requirements
+1. **Detecting stacked pairs**: For each edge connecting nodes on adjacent layers, check if their horizontal bounds overlap
+2. **Adding separation edges**: For overlapping pairs, add a constraint edge requiring minimum horizontal separation
+3. **Global optimization**: Network simplex finds the optimal solution that satisfies all constraints
 
-2. **Penalize vertical alignment**: Add negative-weight edges or penalty terms for stacked configurations
-
-3. **Global optimization**: Network simplex finds the globally optimal solution considering all constraints simultaneously
+The `addAntiStackingEdges()` function in `simplex.go` implements this by iterating over graph edges and adding separation constraints for adjacent-layer pairs that are currently stacked.
 
 ### Comparison
 
-| Aspect | Brandes-Köpf (Current) | Network Simplex (Planned) |
-|--------|------------------------|---------------------------|
+| Aspect | Brandes-Köpf | Network Simplex |
+|--------|--------------|-----------------|
 | Cross-layer constraints | Not possible | Native support |
-| Anti-stacking constraints | Not possible | Add as penalty edges |
+| Anti-stacking constraints | Not possible | `PreventStacking: true` |
 | Optimization scope | Per-layer, heuristic | Global, optimal |
 | Complexity | O(n) | O(n·m) but fast in practice |
 | Node ports | Not native | Supported via δ offsets |
@@ -121,14 +135,18 @@ In auxiliary graph: δ(e_u) = d_e, δ(e_v) = 0
 
 This is directly applicable to Posit's port system.
 
-### Implementation Path
+### Implementation (Complete)
 
-1. **Reuse existing simplex** (`simplex.go`) - already implements network simplex for ranking
-2. **Build auxiliary graph** from the positioned graph after ordering
-3. **Add separation edges** for same-rank node pairs with `δ=ρ(a,b)`, `ω=0`
-4. **Add edge-cost edges** for each original edge with the Ω/ω weights
-5. **Run network simplex** to find optimal X coordinates
-6. **Extract positions** from the auxiliary graph solution
+The X simplex implementation in `simplex.go`:
+
+1. **`assignXCoordinatesNetworkSimplex()`** - Entry point, orchestrates the algorithm
+2. **`buildAuxiliaryGraph()`** - Constructs the constraint graph:
+   - Step 1: Add original nodes
+   - Step 2: Add proxy nodes and edge-cost edges (for weighted edge length optimization)
+   - Step 3: Add same-rank separation edges (adjacent nodes on same layer)
+   - Step 4: Add anti-stacking edges (if `PreventStacking` enabled)
+3. **`addAntiStackingEdges()`** - Detects stacked pairs and adds separation constraints
+4. **`xFeasibleTree()`** / **simplex loop** / **`extractCoordinates()`** - Standard network simplex
 
 ### Performance Considerations
 
@@ -164,8 +182,8 @@ Wrong detection (center distance):
 
 | File | Purpose |
 |------|---------|
-| `position.go` | Brandes-Köpf coordinate assignment (current) |
-| `simplex.go` | Network Simplex (currently ranking only, future: X coordinates) |
+| `position.go` | Coordinate dispatch (BK or Network Simplex) |
+| `simplex.go` | Network Simplex for Y ranking and X coordinates |
 
 ## References
 

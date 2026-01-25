@@ -235,6 +235,17 @@ type Options struct {
 	// XNetworkSimplex provides globally optimal results and supports
 	// cross-layer constraints but is slower for large graphs.
 	XCoordAlgorithm XCoordAlgorithm
+
+	// PreventStacking adds cross-layer separation constraints to prevent
+	// connected nodes from being vertically aligned. This reduces visual
+	// clutter from vertical edges. Only effective when XCoordAlgorithm
+	// is XNetworkSimplex. Default: false.
+	PreventStacking bool
+
+	// StackingMinSep is the minimum horizontal separation between connected
+	// nodes on adjacent layers when PreventStacking is enabled.
+	// Default: NodeSep / 2.
+	StackingMinSep float64
 }
 
 // DefaultOptions returns sensible defaults for layout.

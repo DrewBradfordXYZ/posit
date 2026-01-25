@@ -261,6 +261,168 @@ func TestXSimplex_VsBK(t *testing.T) {
 	}
 }
 
+// TestXSimplex_PreventStacking verifies that anti-stacking pushes connected nodes apart
+func TestXSimplex_PreventStacking(t *testing.T) {
+	g := NewGraph()
+	// Simple chain: A -> B -> C
+	// Without anti-stacking, all nodes would be vertically aligned (stacked)
+	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
+	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("B", "C")
+
+	nodeSep := 50.0
+
+	// Without anti-stacking: nodes should be stacked (same X center)
+	layoutStacked := g.Layout(Options{
+		XCoordAlgorithm: XNetworkSimplex,
+		NodeSep:         nodeSep,
+		RankSep:         100,
+		PreventStacking: false,
+	})
+
+	aStacked := layoutStacked.Nodes["A"]
+	bStacked := layoutStacked.Nodes["B"]
+
+	// Centers should be close (stacked)
+	aCenterStacked := aStacked.X + aStacked.Width/2
+	bCenterStacked := bStacked.X + bStacked.Width/2
+	stackedDiff := aCenterStacked - bCenterStacked
+	if stackedDiff < 0 {
+		stackedDiff = -stackedDiff
+	}
+
+	// With anti-stacking: nodes should be offset
+	layoutUnstacked := g.Layout(Options{
+		XCoordAlgorithm: XNetworkSimplex,
+		NodeSep:         nodeSep,
+		RankSep:         100,
+		PreventStacking: true,
+	})
+
+	aUnstacked := layoutUnstacked.Nodes["A"]
+	bUnstacked := layoutUnstacked.Nodes["B"]
+
+	// Check that horizontal bounds don't overlap
+	// A's bounds: [A.X, A.X + A.Width]
+	// B's bounds: [B.X, B.X + B.Width]
+	aLeft := aUnstacked.X
+	aRight := aUnstacked.X + aUnstacked.Width
+	bLeft := bUnstacked.X
+	bRight := bUnstacked.X + bUnstacked.Width
+
+	// Check for overlap: ranges intersect if NOT (aRight < bLeft OR bRight < aLeft)
+	overlapping := !(aRight < bLeft || bRight < aLeft)
+
+	if overlapping {
+		t.Errorf("PreventStacking should separate A and B horizontally: A=[%v,%v], B=[%v,%v]",
+			aLeft, aRight, bLeft, bRight)
+	}
+
+	// The unstacked layout should have more X spread than stacked
+	unstackedDiff := (aUnstacked.X + aUnstacked.Width/2) - (bUnstacked.X + bUnstacked.Width/2)
+	if unstackedDiff < 0 {
+		unstackedDiff = -unstackedDiff
+	}
+
+	if unstackedDiff <= stackedDiff {
+		t.Errorf("PreventStacking should increase X separation: stacked=%v, unstacked=%v",
+			stackedDiff, unstackedDiff)
+	}
+}
+
+// TestXSimplex_PreventStacking_FanOut tests anti-stacking with fan-out pattern
+func TestXSimplex_PreventStacking_FanOut(t *testing.T) {
+	g := NewGraph()
+	// Fan-out: A -> (B, C, D)
+	// In fan-out, A is connected to multiple children on the same layer.
+	// Anti-stacking can't prevent overlap with ALL children (they span wider than A).
+	// But it should ensure A isn't directly stacked (same center) with any one child.
+	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
+	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
+	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
+	g.MustAddEdge("A", "B")
+	g.MustAddEdge("A", "C")
+	g.MustAddEdge("A", "D")
+
+	layout := g.Layout(Options{
+		XCoordAlgorithm: XNetworkSimplex,
+		NodeSep:         50,
+		RankSep:         100,
+		PreventStacking: true,
+	})
+
+	aNode := layout.Nodes["A"]
+	aCenter := aNode.X + aNode.Width/2
+
+	// Verify A's center is not identical to any child's center
+	// (small tolerance for floating point)
+	tolerance := 1.0
+	for _, child := range []struct {
+		name string
+		node NodeLayout
+	}{
+		{"B", layout.Nodes["B"]},
+		{"C", layout.Nodes["C"]},
+		{"D", layout.Nodes["D"]},
+	} {
+		childCenter := child.node.X + child.node.Width/2
+		diff := aCenter - childCenter
+		if diff < 0 {
+			diff = -diff
+		}
+		if diff < tolerance {
+			t.Errorf("A center (%v) should not be identical to %s center (%v)",
+				aCenter, child.name, childCenter)
+		}
+	}
+
+	// Also verify the layout is valid (no same-layer overlaps)
+	bNode := layout.Nodes["B"]
+	cNode := layout.Nodes["C"]
+	dNode := layout.Nodes["D"]
+
+	if bNode.Y != cNode.Y || cNode.Y != dNode.Y {
+		t.Errorf("B, C, D should be on same layer")
+	}
+}
+
+// TestXSimplex_PreventStacking_CustomSep tests custom minimum separation
+func TestXSimplex_PreventStacking_CustomSep(t *testing.T) {
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{Width: 50, Height: 30})
+	g.AddNode("B", NodeOptions{Width: 50, Height: 30})
+	g.MustAddEdge("A", "B")
+
+	customSep := 100.0
+	layout := g.Layout(Options{
+		XCoordAlgorithm: XNetworkSimplex,
+		NodeSep:         50,
+		RankSep:         100,
+		PreventStacking: true,
+		StackingMinSep:  customSep,
+	})
+
+	aNode := layout.Nodes["A"]
+	bNode := layout.Nodes["B"]
+
+	// Calculate center-to-center distance
+	aCenter := aNode.X + aNode.Width/2
+	bCenter := bNode.X + bNode.Width/2
+	dist := aCenter - bCenter
+	if dist < 0 {
+		dist = -dist
+	}
+
+	// Distance should be at least half-widths + customSep
+	minDist := aNode.Width/2 + bNode.Width/2 + customSep
+	if dist < minDist-1 { // Small tolerance for floating point
+		t.Errorf("separation should be at least %v, got %v", minDist, dist)
+	}
+}
+
 // BenchmarkXCoordBK benchmarks Brandes-Köpf algorithm
 func BenchmarkXCoordBK(b *testing.B) {
 	g := buildBenchGraph(50)

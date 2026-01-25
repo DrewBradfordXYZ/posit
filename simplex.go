@@ -1444,7 +1444,9 @@ func (xs *xSimplexState) xSlack(key xEdgeKey) float64 {
 	return toNode.x - fromNode.x - edge.delta
 }
 
-// xFeasibleTree builds a tight spanning tree from current positions.
+// xFeasibleTree builds a tight spanning tree using frontier-based edge selection.
+// Optimization: maintain frontier edges (edges with exactly one endpoint in tree)
+// instead of scanning all edges. This reduces O(V*E) to O(V*F) where F is frontier size.
 func (xs *xSimplexState) xFeasibleTree() *xSpanningTree {
 	tree := &xSpanningTree{
 		nodes:     make(map[string]*xAuxNode),
@@ -1464,15 +1466,6 @@ func (xs *xSimplexState) xFeasibleTree() *xSpanningTree {
 		return tree
 	}
 
-	// Sort edge keys ONCE for determinism (not inside loop!)
-	edgeKeys := make([]xEdgeKey, 0, len(xs.auxEdges))
-	for key := range xs.auxEdges {
-		edgeKeys = append(edgeKeys, key)
-	}
-	sort.Slice(edgeKeys, func(i, j int) bool {
-		return xEdgeKeyLess(edgeKeys[i], edgeKeys[j])
-	})
-
 	// Start with first node as root
 	root := nodeIDs[0]
 	tree.root = root
@@ -1481,19 +1474,41 @@ func (xs *xSimplexState) xFeasibleTree() *xSpanningTree {
 		x:  xs.auxNodes[root].x,
 	}
 
-	// Grow tree using minimum slack edges
+	// Initialize frontier with edges incident to root
+	// frontier[key] = true means this edge has exactly one endpoint in tree
+	frontier := make(map[xEdgeKey]bool)
+	for _, neighbor := range xs.auxSucc[root] {
+		frontier[xEdgeKey{from: root, to: neighbor}] = true
+	}
+	for _, neighbor := range xs.auxPred[root] {
+		frontier[xEdgeKey{from: neighbor, to: root}] = true
+	}
+
+	// Grow tree until all nodes included
 	for len(tree.nodes) < len(xs.auxNodes) {
+		// Find minimum slack edge in frontier
 		var bestEdge xEdgeKey
 		minSlack := math.Inf(1)
 		treeToNonTree := true
 		found := false
 
-		for _, key := range edgeKeys {
+		// Sort frontier keys for determinism
+		frontierKeys := make([]xEdgeKey, 0, len(frontier))
+		for key := range frontier {
+			frontierKeys = append(frontierKeys, key)
+		}
+		sort.Slice(frontierKeys, func(i, j int) bool {
+			return xEdgeKeyLess(frontierKeys[i], frontierKeys[j])
+		})
+
+		for _, key := range frontierKeys {
 			inTreeFrom := tree.nodes[key.from] != nil
 			inTreeTo := tree.nodes[key.to] != nil
 
-			if inTreeFrom == inTreeTo {
-				continue // Both in or both out
+			// Skip if both endpoints now in tree (edge is no longer frontier)
+			if inTreeFrom && inTreeTo {
+				delete(frontier, key)
+				continue
 			}
 
 			slack := xs.xSlack(key)
@@ -1513,11 +1528,27 @@ func (xs *xSimplexState) xFeasibleTree() *xSpanningTree {
 						id: id,
 						x:  xs.auxNodes[id].x,
 					}
+					// Add edges incident to new node to frontier
+					for _, neighbor := range xs.auxSucc[id] {
+						if tree.nodes[neighbor] != nil {
+							continue // Both in tree
+						}
+						frontier[xEdgeKey{from: id, to: neighbor}] = true
+					}
+					for _, neighbor := range xs.auxPred[id] {
+						if tree.nodes[neighbor] != nil {
+							continue // Both in tree
+						}
+						frontier[xEdgeKey{from: neighbor, to: id}] = true
+					}
 					break
 				}
 			}
 			continue
 		}
+
+		// Remove best edge from frontier
+		delete(frontier, bestEdge)
 
 		// Tighten edge if needed by adjusting tree node positions
 		if math.Abs(minSlack) > xSimplexTolerance {
@@ -1533,7 +1564,6 @@ func (xs *xSimplexState) xFeasibleTree() *xSpanningTree {
 		// Add edge to tree
 		tree.treeEdges[bestEdge] = true
 		tree.treeEdges[xEdgeKey{from: bestEdge.to, to: bestEdge.from}] = true
-		// Update adjacency lists
 		tree.adj[bestEdge.from] = append(tree.adj[bestEdge.from], bestEdge.to)
 		tree.adj[bestEdge.to] = append(tree.adj[bestEdge.to], bestEdge.from)
 
@@ -1547,6 +1577,24 @@ func (xs *xSimplexState) xFeasibleTree() *xSpanningTree {
 		tree.nodes[newNodeID] = &xAuxNode{
 			id: newNodeID,
 			x:  xs.auxNodes[newNodeID].x,
+		}
+
+		// Add edges incident to new node to frontier (if other endpoint not in tree)
+		for _, neighbor := range xs.auxSucc[newNodeID] {
+			if tree.nodes[neighbor] != nil {
+				// Other endpoint in tree - remove from frontier if present
+				delete(frontier, xEdgeKey{from: newNodeID, to: neighbor})
+				continue
+			}
+			frontier[xEdgeKey{from: newNodeID, to: neighbor}] = true
+		}
+		for _, neighbor := range xs.auxPred[newNodeID] {
+			if tree.nodes[neighbor] != nil {
+				// Other endpoint in tree - remove from frontier if present
+				delete(frontier, xEdgeKey{from: neighbor, to: newNodeID})
+				continue
+			}
+			frontier[xEdgeKey{from: neighbor, to: newNodeID}] = true
 		}
 	}
 

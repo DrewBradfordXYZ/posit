@@ -14,7 +14,13 @@ Improvements identified from code review comparing Posit's implementation agains
 | O(1) swap-delete for adjacency | High | Low | ✅ Done |
 | Leave edge search limit | Medium | Low | ✅ Done |
 | Incremental cut values | Medium | High | ✅ Done |
-| Cached sorted lists | Low | Low | ⬚ Todo |
+| Critical bug fixes (code review) | High | Low | ✅ Done |
+| LCA validation in invalidatePath | Medium | Low | ✅ Done |
+| Cached sorted lists | Low | Low | ✅ Done |
+| Circular search index | Low | Low | ✅ Done |
+| Incremental low/lim recompute | Low | High | ⏸️ Deferred |
+| Union-find for tree | Medium | High | ⬚ Todo |
+| DFS-based enter edge search | Medium | Medium | ⬚ Todo |
 | Generics consolidation | Low | High | ⬚ Todo |
 
 ### Implementation Notes
@@ -28,6 +34,12 @@ Improvements identified from code review comparing Posit's implementation agains
 **Leave edge search limit (Done):** Both Y and X simplex `leaveEdge()` functions now stop after finding 30 negative cut value candidates (following Graphviz's SEARCHSIZE heuristic). Returns the most negative found for better convergence.
 
 **Incremental cut values (Done):** Following Graphviz's `invalidate_path()` approach, `treeUpdate()` walks from endpoints to LCA updating cut values along the path, and `invalidatePath()` marks affected nodes for DFS recomputation. The key insight is the direction flip logic: when walking up the tree, the sign of cut value updates depends on whether we're on the "from" or "to" side of each edge. This provides an additional 30.6% speedup, bringing total improvement to 51% faster than baseline.
+
+**LCA validation (Done):** Both `invalidatePath()` and `xInvalidatePath()` now include Graphviz-style defensive checks to detect if we've skipped over the LCA. This prevents infinite loops if postorder values become corrupted.
+
+**Cached sorted lists (Done):** `sortedNodeIDs` cached at end of `feasibleTree()`/`xFeasibleTree()`, and `sortedEdgeKeys` cached before simplex loop. Eliminates allocation+sort on every `leaveEdge()`/`enterEdge()` call.
+
+**Circular search index (Done):** Both Y and X simplex `leaveEdge()` now maintain a `searchIndex` to continue from the previous position, wrapping around for full coverage. Follows Graphviz's `S_i` pattern for better cache locality.
 
 ---
 
@@ -204,38 +216,7 @@ Graphviz uses iterative DFS within the tail subtree to find entering edges, rath
 
 ---
 
-### 3. Cached Sorted Lists (Low Priority)
-
-Currently sorts node/edge lists on every `leaveEdge()` and `enterEdge()` call for determinism.
-
-**Proposed:** Sort once during tree construction, maintain sorted order.
-
-**Expected impact:** Minor (sorting is fast, but unnecessary work)
-
----
-
-### 4. Circular Search Index (Low Priority)
-
-Graphviz maintains a search index `S_i` to continue searching from where it left off, wrapping around. This provides better cache locality.
-
-**Current approach:** Fresh iteration from start every call
-**Better approach:** Maintain persistent search index
-
-**Expected impact:** Minor (cache improvement)
-
----
-
-### 5. Incremental Low/Lim Recomputation (Low Priority)
-
-Infrastructure exists (`invalidatePath()` sets `low = -1`) but `initLowLimValuesIncremental()` is never called. Full DFS recompute happens instead.
-
-**Expected impact:** ~5-10% additional speedup
-
-**Effort:** Medium - logic exists, needs integration
-
----
-
-### 6. Generics Consolidation (Low Priority)
+### 3. Generics Consolidation (Low Priority)
 
 Y simplex and X simplex have nearly identical tree operations with different types. Could use Go generics to reduce code duplication (~400 lines).
 
@@ -245,6 +226,22 @@ Y simplex and X simplex have nearly identical tree operations with different typ
 - Con: High effort for no runtime benefit
 
 **Recommendation:** Low priority unless significant new simplex work planned.
+
+---
+
+## Deferred
+
+### Incremental Low/Lim Recomputation
+
+Infrastructure exists (`invalidatePath()` sets `low = -1`) but true incremental recomputation is complex:
+- After edge exchange, subtree structure changes (nodes move between subtrees)
+- Postorder numbering must remain globally consistent
+- Need to correctly propagate values up to root
+
+The current `initLowLimValuesIncremental()` doesn't actually implement incremental logic.
+
+**Expected impact:** ~5-10% additional speedup
+**Status:** Deferred due to complexity vs. benefit tradeoff
 
 ---
 

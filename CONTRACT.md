@@ -31,6 +31,15 @@ Consumers of posit's output (serialization layers, renderers, UI frameworks) can
 - If `SourcePort` was specified on input, `EdgeLayout.SourcePort` echoes it back.
 - If `TargetPort` was specified on input, `EdgeLayout.TargetPort` echoes it back.
 
+### Edge Attachment Sides
+
+- `EdgeLayout.SourceSide` and `EdgeLayout.TargetSide` are always populated.
+- Valid values are `Top`, `Bottom`, `Left`, `Right` (the `Side` type).
+- Sides are computed using geometric boundary intersection: where a ray from the node center toward the connected node exits the node boundary.
+- For typical hierarchical layouts, opposite sides face each other (e.g., source `Bottom` → target `Top` in TopToBottom direction).
+- For diagonal arrangements, the side depends on which boundary edge the connecting ray exits first.
+- Side values are in user coordinate space (after direction transformation), matching how they would be rendered.
+
 ## Port Guarantees
 
 - For `PortFixedPos`: the port offset used in routing equals the input offset. No `PortLayout` entry is emitted (the consumer already knows the position).

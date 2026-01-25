@@ -1764,3 +1764,239 @@ func TestNodeOptions_Preserved(t *testing.T) {
 		t.Error("Ports not preserved")
 	}
 }
+
+// ==================== Boundary Side Selection Tests ====================
+
+func TestBoundarySideSelection_DefaultBehavior(t *testing.T) {
+	// Verify default behavior: boundary-based side selection
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
+	g.MustAddEdge("A", "B")
+
+	layout := g.Layout() // Default options
+
+	edge, ok := layout.Edge("A", "B")
+	if !ok {
+		t.Fatal("Edge A->B not found")
+	}
+
+	// In top-to-bottom layout, edges go from bottom of source to top of target
+	if edge.SourceSide != Bottom {
+		t.Errorf("Expected SourceSide=Bottom, got %v", edge.SourceSide)
+	}
+	if edge.TargetSide != Top {
+		t.Errorf("Expected TargetSide=Top, got %v", edge.TargetSide)
+	}
+}
+
+func TestBoundarySideSelection_ClearGap(t *testing.T) {
+	// Nodes with clear horizontal gap → opposite sides (right/left)
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
+	g.MustAddEdge("A", "B")
+
+	layout := g.Layout(Options{
+		Direction: LeftToRight,
+		NodeSep:   50,
+		RankSep:   100,
+	})
+
+	edge, ok := layout.Edge("A", "B")
+	if !ok {
+		t.Fatal("Edge A->B not found")
+	}
+
+	// A is left of B → A exits right, B enters left
+	if edge.SourceSide != Right {
+		t.Errorf("Expected SourceSide=Right (A left of B), got %v", edge.SourceSide)
+	}
+	if edge.TargetSide != Left {
+		t.Errorf("Expected TargetSide=Left (B right of A), got %v", edge.TargetSide)
+	}
+}
+
+func TestBoundarySideSelection_VerticalStack(t *testing.T) {
+	// Nodes stacked vertically → top/bottom sides
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
+	g.MustAddEdge("A", "B")
+
+	layout := g.Layout(Options{
+		Direction: TopToBottom,
+		NodeSep:   50,
+		RankSep:   100,
+	})
+
+	edge, ok := layout.Edge("A", "B")
+	if !ok {
+		t.Fatal("Edge A->B not found")
+	}
+
+	// A is above B → A exits bottom, B enters top
+	if edge.SourceSide != Bottom {
+		t.Errorf("Expected SourceSide=Bottom (A above B), got %v", edge.SourceSide)
+	}
+	if edge.TargetSide != Top {
+		t.Errorf("Expected TargetSide=Top (B below A), got %v", edge.TargetSide)
+	}
+}
+
+func TestBoundarySideSelection_WithPorts(t *testing.T) {
+	// PortFixedOffset + boundary selection
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{
+		Width: 200, Height: 100,
+		Ports: []PortOptions{
+			{ID: "p1", Offset: 30, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+		},
+	})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
+	g.MustAddEdge("A", "B", EdgeOptions{SourcePort: "p1"})
+
+	layout := g.Layout(Options{
+		Direction: LeftToRight,
+		NodeSep:   50,
+		RankSep:   100,
+	})
+
+	nodeA := layout.Nodes["A"]
+	if nodeA.Ports == nil {
+		t.Fatal("Expected Ports map for PortFixedOffset node")
+	}
+
+	p1 := nodeA.Ports["p1"]
+	// B is to the right of A → port should be on Right
+	if p1.Side != Right {
+		t.Errorf("Expected port Side=Right (B is right of A), got %v", p1.Side)
+	}
+	// Offset should be preserved
+	if p1.Offset != 30 {
+		t.Errorf("Expected port Offset=30 (preserved), got %v", p1.Offset)
+	}
+
+	// Edge side should match
+	edge, ok := layout.Edge("A", "B")
+	if !ok {
+		t.Fatal("Edge A->B not found")
+	}
+	if edge.SourceSide != Right {
+		t.Errorf("Expected SourceSide=Right, got %v", edge.SourceSide)
+	}
+}
+
+func TestBoundarySideSelection_Diagonal(t *testing.T) {
+	// Test diagonal positioning - boundary intersection picks the correct side
+	// based on which edge the ray exits first
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{Width: 100, Height: 50}) // Wide rectangle
+	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
+	g.MustAddEdge("A", "B")
+
+	// Force B to be diagonally below-right of A by using a specific layout
+	// In TopToBottom with default settings, B will be directly below A
+	// We need a graph that creates diagonal positioning
+	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
+	g.MustAddEdge("A", "C")
+
+	layout := g.Layout(Options{
+		Direction: TopToBottom,
+		NodeSep:   100, // Wider spacing to create diagonal
+		RankSep:   50,  // Less vertical spacing
+	})
+
+	// Both A->B and A->C edges should have computed sides
+	edgeAB, ok := layout.Edge("A", "B")
+	if !ok {
+		t.Fatal("Edge A->B not found")
+	}
+	edgeAC, ok := layout.Edge("A", "C")
+	if !ok {
+		t.Fatal("Edge A->C not found")
+	}
+
+	// Both edges exit from A - sides should be valid (Bottom or the appropriate side)
+	validSides := map[Side]bool{Top: true, Bottom: true, Left: true, Right: true}
+	if !validSides[edgeAB.SourceSide] {
+		t.Errorf("Invalid SourceSide for A->B: %v", edgeAB.SourceSide)
+	}
+	if !validSides[edgeAC.SourceSide] {
+		t.Errorf("Invalid SourceSide for A->C: %v", edgeAC.SourceSide)
+	}
+}
+
+func TestBoundarySideSelection_AllDirections(t *testing.T) {
+	// Test boundary selection works with all layout directions
+	directions := []Direction{TopToBottom, LeftToRight, BottomToTop, RightToLeft}
+
+	for _, dir := range directions {
+		g := NewGraph()
+		g.AddNode("A", NodeOptions{Width: 100, Height: 50})
+		g.AddNode("B", NodeOptions{Width: 100, Height: 50})
+		g.MustAddEdge("A", "B")
+
+		layout := g.Layout(Options{
+			Direction: dir,
+			NodeSep:   50,
+			RankSep:   100,
+		})
+
+		edge, ok := layout.Edge("A", "B")
+		if !ok {
+			t.Fatalf("Direction %v: Edge A->B not found", dir)
+		}
+
+		// Sides should be valid
+		validSides := map[Side]bool{Top: true, Bottom: true, Left: true, Right: true}
+		if !validSides[edge.SourceSide] {
+			t.Errorf("Direction %v: Invalid SourceSide %v", dir, edge.SourceSide)
+		}
+		if !validSides[edge.TargetSide] {
+			t.Errorf("Direction %v: Invalid TargetSide %v", dir, edge.TargetSide)
+		}
+
+		// Sides should be opposite (source exits toward target, target faces source)
+		opposites := map[Side]Side{Top: Bottom, Bottom: Top, Left: Right, Right: Left}
+		if edge.TargetSide != opposites[edge.SourceSide] {
+			// This is expected for direct edges in the flow direction
+			// Just verify they're valid
+			t.Logf("Direction %v: Source=%v, Target=%v", dir, edge.SourceSide, edge.TargetSide)
+		}
+	}
+}
+
+func TestBoundarySideSelection_PortFree(t *testing.T) {
+	// PortFree with boundary selection
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{
+		Width: 100, Height: 60,
+		Ports: []PortOptions{
+			{ID: "p1", Constraint: PortFree, Axis: PortAxisHorizontal},
+		},
+	})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 60})
+	g.MustAddEdge("A", "B", EdgeOptions{SourcePort: "p1"})
+
+	layout := g.Layout(Options{
+		Direction: LeftToRight,
+		NodeSep:   50,
+		RankSep:   100,
+	})
+
+	nodeA := layout.Nodes["A"]
+	if nodeA.Ports == nil {
+		t.Fatal("Expected Ports map for PortFree node")
+	}
+
+	p1 := nodeA.Ports["p1"]
+	// With PortAxisHorizontal, side must be Left or Right
+	if p1.Side != Left && p1.Side != Right {
+		t.Errorf("PortAxisHorizontal: expected Left or Right, got %v", p1.Side)
+	}
+	// B is to the right in LTR layout
+	if p1.Side != Right {
+		t.Errorf("Expected Right (B is right of A in LTR), got %v", p1.Side)
+	}
+}

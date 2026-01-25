@@ -408,6 +408,9 @@ func (s *layoutState) intersectRect(node *layoutNode, point EdgePoint) EdgePoint
 // For PortFixedOffset ports, the side is computed per-edge based on the direction
 // to the specific connected node (not averaged across all connections).
 // For other port types, the port's pre-computed Side takes precedence.
+//
+// When SideSelection is SideFromBoundary, uses geometric line-rectangle intersection
+// to determine sides implicitly from where edges exit/enter node boundaries.
 func (s *layoutState) inferEdgeSides() {
 	for _, edge := range s.edges {
 		fromNode := s.nodes[edge.key.from]
@@ -421,10 +424,10 @@ func (s *layoutState) inferEdgeSides() {
 			if port := s.getPort(fromNode, edge.sourcePort); port != nil {
 				edge.sourceSide = s.edgePortSide(port, fromNode, toNode)
 			} else {
-				edge.sourceSide, _ = inferSide(fromNode, toNode)
+				edge.sourceSide, _ = s.inferSideDispatch(fromNode, toNode)
 			}
 		} else {
-			edge.sourceSide, _ = inferSide(fromNode, toNode)
+			edge.sourceSide, _ = s.inferSideDispatch(fromNode, toNode)
 		}
 
 		// Target side
@@ -432,98 +435,34 @@ func (s *layoutState) inferEdgeSides() {
 			if port := s.getPort(toNode, edge.targetPort); port != nil {
 				edge.targetSide = s.edgePortSide(port, toNode, fromNode)
 			} else {
-				_, edge.targetSide = inferSide(fromNode, toNode)
+				_, edge.targetSide = s.inferSideDispatch(fromNode, toNode)
 			}
 		} else {
-			_, edge.targetSide = inferSide(fromNode, toNode)
+			_, edge.targetSide = s.inferSideDispatch(fromNode, toNode)
 		}
 	}
 }
 
+// inferSideDispatch determines source and target sides using geometric
+// line-rectangle intersection (boundary-based side selection).
+func (s *layoutState) inferSideDispatch(fromNode, toNode *layoutNode) (sourceSide, targetSide Side) {
+	return inferSideFromBoundary(fromNode, toNode)
+}
+
 // edgePortSide computes the attachment side for a port on thisNode facing connNode.
-// For PortFixedOffset: per-edge side based on direction to the specific connected node,
-// constrained by the port's axis. This ensures each edge exits toward its target
-// rather than using an averaged direction across all connections.
-//
-// When nodes have significant overlap on the constrained axis (>50% of smaller node),
-// same-side routing is used to avoid edges crossing through overlapping node areas.
-// This handles the common case of vertically-stacked nodes with slight horizontal offset.
+// For PortFixedOffset: uses geometric line-rectangle intersection to determine
+// the side implicitly from the edge direction, constrained by the port's axis.
 //
 // For other constraints: uses the port's pre-computed side (user space, converted to internal).
 //
 // Returns an internal-space side that undoDirectionAdjustment will transform to user space.
 func (s *layoutState) edgePortSide(port *PortOptions, thisNode, connNode *layoutNode) Side {
 	if port.Constraint == PortFixedOffset {
-		// Check for significant overlap - if nodes are nearly stacked,
-		// use same-side routing to avoid edges crossing through node areas.
-		if side, ok := s.overlapAwareSide(thisNode, connNode, port.Axis); ok {
-			return s.portSideToInternal(side)
-		}
-
-		// No significant overlap: use direction to connected node
-		dx := (connNode.x + connNode.width/2) - (thisNode.x + thisNode.width/2)
-		dy := (connNode.y + connNode.height/2) - (thisNode.y + thisNode.height/2)
-		// Transform to user space (axis constraints are defined in user space)
-		dx, dy = s.internalToUserDirection(dx, dy)
-		// bestSide returns a user-space side; convert to internal so
-		// undoDirectionAdjustment can correctly transform it back to user space.
-		return s.portSideToInternal(s.bestSide(dx, dy, port.Axis))
+		side := s.edgePortSideBoundary(port, thisNode, connNode)
+		return s.portSideToInternal(side)
 	}
 	// port.Side is in user space (set by assignFreeSides); convert to internal.
 	return s.portSideToInternal(port.Side)
-}
-
-// overlapAwareSide uses node boundaries to determine edge attachment side.
-// When nodes have a clear horizontal gap, edges face each other (opposite sides).
-// When nodes overlap horizontally, edges use same-side routing to avoid crossing.
-//
-// This is more precise than center-to-center direction because it uses actual
-// node boundaries rather than a heuristic based on center positions.
-func (s *layoutState) overlapAwareSide(thisNode, connNode *layoutNode, axis PortAxis) (Side, bool) {
-	// Only apply for horizontal axis ports in vertical flow directions.
-	if axis != PortAxisHorizontal {
-		return Top, false
-	}
-	if s.opts.Direction != TopToBottom && s.opts.Direction != BottomToTop {
-		return Top, false
-	}
-
-	// Node boundaries in internal coordinates
-	thisLeft := thisNode.x
-	thisRight := thisNode.x + thisNode.width
-	connLeft := connNode.x
-	connRight := connNode.x + connNode.width
-
-	// Check for clear horizontal gap (no overlap)
-	if thisRight < connLeft {
-		// Connected node is clearly to the right → use opposite sides (Right→Left)
-		return Top, false // Let default direction-based logic handle it
-	}
-	if connRight < thisLeft {
-		// Connected node is clearly to the left → use opposite sides (Left→Right)
-		return Top, false // Let default direction-based logic handle it
-	}
-
-	// Nodes overlap horizontally → use same-side routing
-	// Both source and target exit/enter from Right, creating a detour arc
-	return Right, true
-}
-
-// inferSide determines the optimal source and target sides based on relative positions.
-func inferSide(fromNode, toNode *layoutNode) (sourceSide, targetSide Side) {
-	dx := (toNode.x + toNode.width/2) - (fromNode.x + fromNode.width/2)
-	dy := (toNode.y + toNode.height/2) - (fromNode.y + fromNode.height/2)
-
-	if math.Abs(dx) > math.Abs(dy) {
-		if dx > 0 {
-			return Right, Left
-		}
-		return Left, Right
-	}
-	if dy > 0 {
-		return Bottom, Top
-	}
-	return Top, Bottom
 }
 
 // getPort returns the port with the given ID on a node, or nil if not found.
@@ -534,14 +473,6 @@ func (s *layoutState) getPort(node *layoutNode, portID string) *PortOptions {
 		}
 	}
 	return nil
-}
-
-// getPortSide returns the side of a specific port on a node.
-func (s *layoutState) getPortSide(node *layoutNode, portID string) (Side, bool) {
-	if port := s.getPort(node, portID); port != nil {
-		return port.Side, true
-	}
-	return Top, false
 }
 
 // offsetParallelEdges offsets multiple edges between the same node pair.

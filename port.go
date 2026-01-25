@@ -48,24 +48,19 @@ func (s *layoutState) computePortOffsets() {
 
 // assignFreeSides determines the best side for each PortFree/PortFixedOffset port on a node.
 // Uses the position of connected nodes relative to this node's center.
+//
+// When SideSelection is SideFromBoundary, uses geometric line-rectangle intersection
+// voting across all connected nodes to determine the side.
 func (s *layoutState) assignFreeSides(node *layoutNode) {
-	nodeCX := node.x + node.width/2
-	nodeCY := node.y + node.height/2
-
 	for i := range node.ports {
 		port := &node.ports[i]
 		if port.Constraint != PortFree && port.Constraint != PortFixedOffset {
 			continue
 		}
 
-		// Find average direction to connected nodes (in internal coordinates)
-		dx, dy := s.portConnectedDirection(node.id, port.ID, nodeCX, nodeCY)
-
-		// Transform from internal coordinate space to user space
-		dx, dy = s.internalToUserDirection(dx, dy)
-
-		// Pick the best side based on direction and axis constraint
-		port.Side = s.bestSide(dx, dy, port.Axis)
+		// Use boundary-based approach: geometric line-rectangle intersection
+		// voting across all connected nodes to determine the side.
+		port.Side = s.assignPortSideFromBoundary(node, port)
 	}
 }
 
@@ -86,31 +81,6 @@ func (s *layoutState) internalToUserDirection(dx, dy float64) (float64, float64)
 	default: // TopToBottom
 		return dx, dy
 	}
-}
-
-// portConnectedDirection returns the average direction vector from a node's center
-// to all nodes connected to a specific port.
-func (s *layoutState) portConnectedDirection(nodeID, portID string, nodeCX, nodeCY float64) (dx, dy float64) {
-	count := 0
-	for _, edge := range s.edges {
-		var connNode *layoutNode
-		if edge.key.from == nodeID && edge.sourcePort == portID {
-			connNode = s.nodes[edge.key.to]
-		} else if edge.key.to == nodeID && edge.targetPort == portID {
-			connNode = s.nodes[edge.key.from]
-		}
-		if connNode == nil {
-			continue
-		}
-		dx += (connNode.x + connNode.width/2) - nodeCX
-		dy += (connNode.y + connNode.height/2) - nodeCY
-		count++
-	}
-	if count > 0 {
-		dx /= float64(count)
-		dy /= float64(count)
-	}
-	return dx, dy
 }
 
 // bestSide picks the side that best faces the given direction, constrained by axis.

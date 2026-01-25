@@ -144,6 +144,12 @@ func (s *layoutState) feasibleTree() *spanningTree {
 		nodeIDs = append(nodeIDs, id)
 	}
 	sort.Strings(nodeIDs)
+
+	// Handle empty graph
+	if len(nodeIDs) == 0 {
+		return tree
+	}
+
 	root := nodeIDs[0]
 	tree.addNode(root)
 
@@ -214,6 +220,9 @@ func (t *spanningTree) initLowLimValues() {
 	var dfs func(v, parent string) int
 	dfs = func(v, parent string) int {
 		node := t.nodes[v]
+		if node == nil {
+			return counter
+		}
 		node.parent = parent
 		low := counter
 
@@ -339,7 +348,8 @@ func (t *spanningTree) assignCutValue(s *layoutState, v string) {
 		}
 
 		// If this is a tree edge to a child, propagate its cut value
-		if t.isTreeEdge(key) {
+		// Must verify other is actually a child (parent == v), not just any tree edge
+		if t.isTreeEdge(key) && t.nodes[other] != nil && t.nodes[other].parent == v {
 			// Get the cut value of the child tree edge
 			// Use ok idiom since cut value of 0 is valid (balanced edge)
 			childCutValue, ok := t.cutValues[edgeKey{from: other, to: v}]

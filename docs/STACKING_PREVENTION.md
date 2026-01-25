@@ -1,6 +1,8 @@
 # Stacking Prevention
 
-**Status: IMPLEMENTED** (post-hoc nudging) | **Planned: Auto-generated constraints**
+**Status: IMPLEMENTED** - Two-layer approach:
+1. **Auto-generated constraints** (fan-in/fan-out cases) - integrated into BK
+2. **Post-hoc nudging** (single-edge cases) - fallback in spread.go
 
 ## Problem
 
@@ -69,9 +71,9 @@ func (s *layoutState) spreadStackedNodes() {
 | May create new conflicts | Nudging one pair can stack another |
 | Single pass | Doesn't iterate to convergence |
 
-## Planned Improvement: Auto-Generated Constraints
+## Auto-Generated Constraints (Implemented)
 
-Replace post-hoc nudging with **constraint-based re-layout**:
+For fan-in/fan-out cases, we use **constraint-based re-layout**:
 
 ```
 Standard Approach (MSAGL):     Posit Approach:
@@ -105,10 +107,10 @@ func (s *layoutState) assignXCoordinatesWithConstraints() {
 }
 ```
 
-### Why This Is Better
+### Benefits Over Pure Post-hoc Nudging
 
-| Aspect | Post-hoc Nudge | Constraint Re-layout |
-|--------|----------------|----------------------|
+| Aspect | Post-hoc Nudge Only | With Constraints |
+|--------|---------------------|------------------|
 | Uses BK optimization | No | Yes |
 | Considers full graph | No | Yes |
 | Margin calculation | Fixed 15px | Algorithm-determined |

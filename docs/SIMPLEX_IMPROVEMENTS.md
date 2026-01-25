@@ -138,9 +138,96 @@ The key insight is the direction flip logic: when walking up the tree, the sign 
 
 ---
 
+## Code Review Findings (January 2026)
+
+Comprehensive code review comparing Posit against Graphviz and ELK identified the following issues:
+
+### Bugs to Fix
+
+| Issue | Severity | Location | Description |
+|-------|----------|----------|-------------|
+| Missing child check in Y simplex | **Critical** | `assignCutValue()` ~line 342 | X simplex validates `other.parent == v` before propagating child cut values, Y simplex doesn't |
+| Missing nil guard in Y simplex DFS | **Critical** | `initLowLimValues()` ~line 216 | X simplex checks `node == nil`, Y simplex doesn't |
+| Empty graph panic risk | High | `feasibleTree()` ~line 147 | Y simplex accesses `nodeIDs[0]` without checking for empty graph |
+| Missing LCA validation | Medium | `xInvalidatePath()` | Could silently skip LCA if postorder values corrupt |
+
+### Dead Code
+
+- `initLowLimValuesIncremental()` (lines 553-585) exists but is never called
+- Comment at line 640 acknowledges: "full recompute for now - incremental is complex"
+- The `invalidatePath()` markers are set but not used for incremental DFS
+
+### Code Inconsistencies (Y vs X Simplex)
+
+| Aspect | Y Simplex | X Simplex |
+|--------|-----------|-----------|
+| Nil checks in DFS | Missing | Present |
+| Child validation in cut value | Missing | Present |
+| Empty graph handling | Panics | Graceful return |
+| Cut value type | `int` | `float64` with tolerance |
+
+### What's Working Well
+
+- All 11 contract test topologies pass
+- Direction flip logic in `treeUpdate()` is correct
+- O(1) swap-delete properly implemented
+- Leave edge search limit (30) correct
+- Subtree removal matches ELK approach
+
+---
+
 ## Todo
 
-### 1. Cached Sorted Lists (Low Priority)
+### 1. Fix Critical Bugs (High Priority)
+
+**Child check in Y simplex `assignCutValue()`:**
+```go
+// Current (buggy):
+if t.isTreeEdge(key) {
+
+// Should be (like X simplex):
+if t.isTreeEdge(key) && t.nodes[other] != nil && t.nodes[other].parent == v {
+```
+
+**Nil guard in Y simplex `initLowLimValues()`:**
+```go
+// Add at start of dfs():
+if node == nil {
+    return counter
+}
+```
+
+**Empty graph check in `feasibleTree()`:**
+```go
+if len(nodeIDs) == 0 {
+    return tree
+}
+```
+
+---
+
+### 2. Union-Find for Tree Construction (Medium Priority)
+
+Graphviz uses union-find with path compression for O(α(n)) subtree membership tests during `feasible_tree()`. Posit currently iterates all edges O(N*E).
+
+**Expected impact:** Significant on large graphs (>500 nodes)
+
+**Effort:** High - requires architectural change
+
+---
+
+### 3. DFS-Based Enter Edge Search (Medium Priority)
+
+Graphviz uses iterative DFS within the tail subtree to find entering edges, rather than checking all non-tree edges.
+
+**Current approach:** `enterEdge()` iterates all edges, checking `isDescendant()` for each
+**Better approach:** DFS only within relevant subtree
+
+**Expected impact:** Medium (reduces edge iterations)
+
+---
+
+### 4. Cached Sorted Lists (Low Priority)
 
 Currently sorts node/edge lists on every `leaveEdge()` and `enterEdge()` call for determinism.
 
@@ -150,12 +237,33 @@ Currently sorts node/edge lists on every `leaveEdge()` and `enterEdge()` call fo
 
 ---
 
-### 3. Generics Consolidation (Low Priority)
+### 5. Circular Search Index (Low Priority)
+
+Graphviz maintains a search index `S_i` to continue searching from where it left off, wrapping around. This provides better cache locality.
+
+**Current approach:** Fresh iteration from start every call
+**Better approach:** Maintain persistent search index
+
+**Expected impact:** Minor (cache improvement)
+
+---
+
+### 6. Incremental Low/Lim Recomputation (Low Priority)
+
+Infrastructure exists (`invalidatePath()` sets `low = -1`) but `initLowLimValuesIncremental()` is never called. Full DFS recompute happens instead.
+
+**Expected impact:** ~5-10% additional speedup
+
+**Effort:** Medium - logic exists, needs integration
+
+---
+
+### 7. Generics Consolidation (Low Priority)
 
 Y simplex and X simplex have nearly identical tree operations with different types. Could use Go generics to reduce code duplication (~400 lines).
 
 **Tradeoff:**
-- Pro: Reduces code duplication
+- Pro: Reduces code duplication, fixes apply to both
 - Con: More complex type signatures, harder to read
 - Con: High effort for no runtime benefit
 

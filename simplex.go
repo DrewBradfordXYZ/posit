@@ -12,11 +12,14 @@ import (
 
 // spanningTree holds the tree structure for the network simplex algorithm.
 type spanningTree struct {
-	nodes     map[string]*treeNode
-	treeEdges map[edgeKey]bool   // Which edges are in the tree
-	adj       map[string][]string // Adjacency lists for O(1) neighbor lookup
-	cutValues map[edgeKey]int     // Cut value for each tree edge
-	root      string
+	nodes          map[string]*treeNode
+	treeEdges      map[edgeKey]bool    // Which edges are in the tree
+	adj            map[string][]string // Adjacency lists for O(1) neighbor lookup
+	cutValues      map[edgeKey]int     // Cut value for each tree edge
+	root           string
+	sortedNodeIDs  []string   // Cached sorted node IDs for leaveEdge()
+	sortedEdgeKeys []edgeKey  // Cached sorted graph edge keys for enterEdge()
+	searchIndex    int        // Circular search index for leaveEdge() (Graphviz S_i)
 }
 
 // treeNode holds per-node data for the spanning tree.
@@ -209,6 +212,13 @@ func (s *layoutState) feasibleTree() *spanningTree {
 		}
 	}
 
+	// Cache sorted node IDs for deterministic iteration in leaveEdge()
+	tree.sortedNodeIDs = make([]string, 0, len(tree.nodes))
+	for id := range tree.nodes {
+		tree.sortedNodeIDs = append(tree.sortedNodeIDs, id)
+	}
+	sort.Strings(tree.sortedNodeIDs)
+
 	return tree
 }
 
@@ -376,19 +386,21 @@ func (t *spanningTree) assignCutValue(s *layoutState, v string) {
 const leaveEdgeSearchLimit = 30
 
 func (t *spanningTree) leaveEdge() (edgeKey, bool) {
-	// Get nodes in sorted order for deterministic iteration
-	nodeIDs := make([]string, 0, len(t.nodes))
-	for id := range t.nodes {
-		nodeIDs = append(nodeIDs, id)
-	}
-	sort.Strings(nodeIDs)
-
+	// Use cached sorted node IDs with circular search (Graphviz S_i pattern)
 	// Look for the edge with most negative cut value, but limit search
+	n := len(t.sortedNodeIDs)
+	if n == 0 {
+		return edgeKey{}, false
+	}
+
 	var best edgeKey
 	bestCut := 0
 	found := 0
+	startIdx := t.searchIndex
 
-	for _, v := range nodeIDs {
+	// Search from startIdx to end
+	for i := startIdx; i < n && found < leaveEdgeSearchLimit; i++ {
+		v := t.sortedNodeIDs[i]
 		node := t.nodes[v]
 		if node.parent == "" {
 			continue
@@ -400,10 +412,33 @@ func (t *spanningTree) leaveEdge() (edgeKey, bool) {
 				bestCut = cutVal
 			}
 			found++
-			if found >= leaveEdgeSearchLimit {
-				break
+			t.searchIndex = i + 1 // Continue from next position
+		}
+	}
+
+	// Wrap around: search from 0 to startIdx
+	if found < leaveEdgeSearchLimit && startIdx > 0 {
+		for i := 0; i < startIdx && found < leaveEdgeSearchLimit; i++ {
+			v := t.sortedNodeIDs[i]
+			node := t.nodes[v]
+			if node.parent == "" {
+				continue
+			}
+			key := edgeKey{from: v, to: node.parent}
+			if cutVal, ok := t.cutValues[key]; ok && cutVal < 0 {
+				if cutVal < bestCut {
+					best = key
+					bestCut = cutVal
+				}
+				found++
+				t.searchIndex = i + 1
 			}
 		}
+	}
+
+	// Reset search index if we wrapped around completely
+	if t.searchIndex >= n {
+		t.searchIndex = 0
 	}
 
 	if found > 0 {
@@ -441,25 +476,14 @@ func (t *spanningTree) enterEdge(s *layoutState, leave edgeKey) edgeKey {
 		flip = true
 	}
 
-	// Get edges in sorted order for deterministic iteration
-	edgeKeys := make([]edgeKey, 0, len(s.edges))
-	for key := range s.edges {
-		edgeKeys = append(edgeKeys, key)
-	}
-	sort.Slice(edgeKeys, func(i, j int) bool {
-		if edgeKeys[i].from != edgeKeys[j].from {
-			return edgeKeys[i].from < edgeKeys[j].from
-		}
-		return edgeKeys[i].to < edgeKeys[j].to
-	})
-
+	// Use cached sorted edge keys for deterministic iteration (built before simplex loop)
 	// Find non-tree edge with minimum slack that crosses the cut correctly.
 	// The entering edge must go from the tail side to the head side.
 	var best edgeKey
 	bestSlack := math.MaxInt
 	found := false
 
-	for _, key := range edgeKeys {
+	for _, key := range t.sortedEdgeKeys {
 		if t.isTreeEdge(key) {
 			continue
 		}
@@ -545,11 +569,19 @@ func (t *spanningTree) treeUpdate(s *layoutState, v, w string, cutvalue int, dir
 // invalidatePath marks nodes on the path from toNode to lca as needing DFS recomputation.
 // Nodes are marked by setting low = -1.
 func (t *spanningTree) invalidatePath(lca, toNode string) {
+	lcaNode := t.nodes[lca]
 	for toNode != lca {
 		node := t.nodes[toNode]
 		if node == nil || node.low == -1 {
 			break // Already invalidated or doesn't exist
 		}
+
+		// Validate we haven't skipped the LCA (would indicate corrupted postorder values)
+		// Following Graphviz's defensive check in invalidate_path()
+		if lcaNode != nil && node.lim >= lcaNode.lim {
+			break
+		}
+
 		node.low = -1 // Mark as needing recomputation
 
 		// Move up to parent
@@ -826,6 +858,18 @@ func (s *layoutState) assignLayersNetworkSimplex() {
 	tree.initLowLimValues()
 	tree.initCutValues(s)
 
+	// Cache sorted edge keys for enterEdge() (graph edges don't change during simplex)
+	tree.sortedEdgeKeys = make([]edgeKey, 0, len(s.edges))
+	for key := range s.edges {
+		tree.sortedEdgeKeys = append(tree.sortedEdgeKeys, key)
+	}
+	sort.Slice(tree.sortedEdgeKeys, func(i, j int) bool {
+		if tree.sortedEdgeKeys[i].from != tree.sortedEdgeKeys[j].from {
+			return tree.sortedEdgeKeys[i].from < tree.sortedEdgeKeys[j].from
+		}
+		return tree.sortedEdgeKeys[i].to < tree.sortedEdgeKeys[j].to
+	})
+
 	// Step 5: Iterate until optimal (no negative cut values)
 	maxIterations := max(len(s.nodes)*len(s.edges), 100)
 
@@ -919,11 +963,13 @@ type xAuxEdge struct {
 
 // xSpanningTree holds the spanning tree for X simplex.
 type xSpanningTree struct {
-	nodes     map[string]*xAuxNode
-	treeEdges map[xEdgeKey]bool
-	adj       map[string][]string // Adjacency lists for O(1) neighbor lookup
-	cutValues map[xEdgeKey]float64
-	root      string
+	nodes         map[string]*xAuxNode
+	treeEdges     map[xEdgeKey]bool
+	adj           map[string][]string // Adjacency lists for O(1) neighbor lookup
+	cutValues     map[xEdgeKey]float64
+	root          string
+	sortedNodeIDs []string // Cached sorted node IDs for leaveEdge()
+	searchIndex   int      // Circular search index for leaveEdge() (Graphviz S_i)
 }
 
 // xSimplexState holds state for X coordinate network simplex.
@@ -943,6 +989,9 @@ type xSimplexState struct {
 
 	// Subtree removal state
 	removedAuxLeaves []xRemovedLeaf
+
+	// Cached sorted edge keys for enterEdge()
+	sortedEdgeKeys []xEdgeKey
 }
 
 // xRemovedLeaf represents a leaf node removed from the auxiliary graph.
@@ -993,6 +1042,15 @@ func (s *layoutState) assignXCoordinatesNetworkSimplex() {
 	// Initialize tree values
 	xs.tree.initLowLim()
 	xs.initCutValues()
+
+	// Cache sorted edge keys for enterEdge() (aux edges don't change during simplex)
+	xs.sortedEdgeKeys = make([]xEdgeKey, 0, len(xs.auxEdges))
+	for key := range xs.auxEdges {
+		xs.sortedEdgeKeys = append(xs.sortedEdgeKeys, key)
+	}
+	sort.Slice(xs.sortedEdgeKeys, func(i, j int) bool {
+		return xEdgeKeyLess(xs.sortedEdgeKeys[i], xs.sortedEdgeKeys[j])
+	})
 
 	// Iterate until optimal
 	maxIterations := max(len(xs.auxNodes)*len(xs.auxEdges), 1000)
@@ -1477,6 +1535,13 @@ func (xs *xSimplexState) xFeasibleTree() *xSpanningTree {
 		}
 	}
 
+	// Cache sorted node IDs for deterministic iteration in leaveEdge()
+	tree.sortedNodeIDs = make([]string, 0, len(tree.nodes))
+	for id := range tree.nodes {
+		tree.sortedNodeIDs = append(tree.sortedNodeIDs, id)
+	}
+	sort.Strings(tree.sortedNodeIDs)
+
 	return tree
 }
 
@@ -1635,19 +1700,20 @@ func (xs *xSimplexState) assignCutValue(v string) {
 
 // leaveEdge finds a tree edge with negative cut value (X simplex).
 func (xs *xSimplexState) leaveEdge() (xEdgeKey, bool) {
-	// Get nodes in sorted order for deterministic iteration
-	nodeIDs := make([]string, 0, len(xs.tree.nodes))
-	for id := range xs.tree.nodes {
-		nodeIDs = append(nodeIDs, id)
+	// Use cached sorted node IDs with circular search (Graphviz S_i pattern)
+	n := len(xs.tree.sortedNodeIDs)
+	if n == 0 {
+		return xEdgeKey{}, false
 	}
-	sort.Strings(nodeIDs)
 
-	// Look for the edge with most negative cut value, but limit search
 	var best xEdgeKey
 	bestCut := 0.0
 	found := 0
+	startIdx := xs.tree.searchIndex
 
-	for _, v := range nodeIDs {
+	// Search from startIdx to end
+	for i := startIdx; i < n && found < leaveEdgeSearchLimit; i++ {
+		v := xs.tree.sortedNodeIDs[i]
 		node := xs.tree.nodes[v]
 		if node == nil || node.parent == "" {
 			continue
@@ -1659,10 +1725,33 @@ func (xs *xSimplexState) leaveEdge() (xEdgeKey, bool) {
 				bestCut = cut
 			}
 			found++
-			if found >= leaveEdgeSearchLimit {
-				break
+			xs.tree.searchIndex = i + 1
+		}
+	}
+
+	// Wrap around: search from 0 to startIdx
+	if found < leaveEdgeSearchLimit && startIdx > 0 {
+		for i := 0; i < startIdx && found < leaveEdgeSearchLimit; i++ {
+			v := xs.tree.sortedNodeIDs[i]
+			node := xs.tree.nodes[v]
+			if node == nil || node.parent == "" {
+				continue
+			}
+			key := xEdgeKey{from: v, to: node.parent}
+			if cut := xs.tree.cutValues[key]; cut < -xSimplexTolerance {
+				if cut < bestCut {
+					best = key
+					bestCut = cut
+				}
+				found++
+				xs.tree.searchIndex = i + 1
 			}
 		}
+	}
+
+	// Reset search index if we wrapped around completely
+	if xs.tree.searchIndex >= n {
+		xs.tree.searchIndex = 0
 	}
 
 	if found > 0 {
@@ -1693,21 +1782,13 @@ func (xs *xSimplexState) enterEdge(leave xEdgeKey) xEdgeKey {
 		flip = true
 	}
 
-	// Get edges in sorted order for determinism
-	edgeKeys := make([]xEdgeKey, 0, len(xs.auxEdges))
-	for key := range xs.auxEdges {
-		edgeKeys = append(edgeKeys, key)
-	}
-	sort.Slice(edgeKeys, func(i, j int) bool {
-		return xEdgeKeyLess(edgeKeys[i], edgeKeys[j])
-	})
-
+	// Use cached sorted edge keys for determinism (built before simplex loop)
 	// Find min-slack non-tree edge crossing the cut correctly
 	var best xEdgeKey
 	bestSlack := math.Inf(1)
 	found := false
 
-	for _, key := range edgeKeys {
+	for _, key := range xs.sortedEdgeKeys {
 		if xs.tree.isTreeEdge(key) {
 			continue
 		}
@@ -1784,11 +1865,19 @@ func (t *xSpanningTree) xTreeUpdate(v, w string, cutvalue float64, dir bool) str
 
 // xInvalidatePath marks nodes on the path from toNode to lca as needing DFS recomputation.
 func (t *xSpanningTree) xInvalidatePath(lca, toNode string) {
+	lcaNode := t.nodes[lca]
 	for toNode != lca {
 		node := t.nodes[toNode]
 		if node == nil || node.low == -1 {
 			break // Already invalidated or doesn't exist
 		}
+
+		// Validate we haven't skipped the LCA (would indicate corrupted postorder values)
+		// Following Graphviz's defensive check in invalidate_path()
+		if lcaNode != nil && node.lim >= lcaNode.lim {
+			break
+		}
+
 		node.low = -1 // Mark as needing recomputation
 
 		if node.parent == "" {

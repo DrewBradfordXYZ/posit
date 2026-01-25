@@ -11,6 +11,8 @@ Improvements identified from code review comparing Posit's implementation agains
 | Cut value ok idiom | High | Low | ✅ Done |
 | Adjacency lists | Medium | Low | ✅ Done |
 | Subtree removal | Medium | Medium | ✅ Done |
+| **O(1) swap-delete for adjacency** | **High** | **Low** | ⬚ Todo |
+| Leave edge search limit | Medium | Low | ⬚ Todo |
 | Incremental cut values | Medium | High | ⏸️ Deferred |
 | Cached sorted lists | Low | Low | ⬚ Todo |
 | Generics consolidation | Low | High | ⬚ Todo |
@@ -35,9 +37,10 @@ Detailed analysis of how Graphviz, ELK, and dagre implement network simplex opti
 
 **Key optimizations:**
 1. **Incremental cut value updates via `invalidate_path()`** - Only recomputes cut values for nodes on the path between exchanged edges, not the entire tree. This is the single biggest optimization.
-2. **Union-find with path compression** - Uses union-find for O(α(n)) subtree membership tests during feasible tree construction
-3. **Search limit of 999 iterations** - Caps leave edge search to prevent pathological cases
-4. **Immediate tree edge lookup** - Each node stores its parent tree edge directly, avoiding repeated searches
+2. **O(1) swap-delete for adjacency removal** - Uses array swap with last element instead of linear search and shift
+3. **Search limit of 30 edges** - Caps leave edge search to prevent pathological cases (SEARCHSIZE constant)
+4. **Union-find with path compression** - Uses union-find for O(α(n)) subtree membership tests during feasible tree construction
+5. **Immediate tree edge lookup** - Each node stores its parent tree edge directly, avoiding repeated searches
 
 **Architecture:**
 - `init_rank()` - Initial feasible ranking using longest path
@@ -84,19 +87,11 @@ Detailed analysis of how Graphviz, ELK, and dagre implement network simplex opti
 | Incremental cut values | ✅ `invalidate_path()` | ❌ Full recompute | ❌ Full recompute | ❌ Full recompute |
 | Subtree removal | ❌ | ✅ (≥40 nodes) | ❌ | ✅ (≥40 nodes) |
 | Adjacency lists | ✅ | ✅ | ❌ | ✅ |
+| O(1) adjacency removal | ✅ swap-delete | ✅ edge-centric | ❌ | ❌ O(n) linear |
+| Leave edge search limit | ✅ (30) | ✅ | ❌ | ❌ |
 | Iteration limit | ✅ (999) | ✅ | ❌ | ✅ (n×m) |
 | Union-find for tree | ✅ | ❌ | ❌ | ❌ |
 | Postorder (low/lim) | ✅ | ✅ | ✅ | ✅ |
-
-### Implementation Priority (Recommended Order)
-
-Based on impact/effort ratio:
-
-1. **Subtree removal** - Medium effort, 2-10x speedup on chain-heavy graphs
-2. **Incremental cut values** - High effort, 2-10x speedup on iteration-heavy graphs
-3. **Adjacency lists** - Low effort, 2-5x speedup on tree traversals
-4. **Leave edge search limit** - Low effort, prevents pathological hangs
-5. **Better iteration cap** - Low effort, scales with graph structure not n×m
 
 ---
 
@@ -107,204 +102,138 @@ Based on impact/effort ratio:
 
 Fixed bug where `childCutValue == 0` conflated "not found" with "actual zero value". Now uses Go's `ok` idiom.
 
+### ✅ Adjacency Lists (Medium Priority)
+**Commit:** `83c6228`
+
+Both Y and X simplex spanning trees now maintain `adj map[string][]string` for O(1) neighbor lookup. The `neighbors()` function returns `t.adj[v]` directly instead of iterating all tree edges.
+
+### ✅ Subtree Removal (Medium Priority)
+**Commit:** `83c6228`
+
+Leaf nodes (degree 1) are removed before running network simplex and reattached afterward. Uses ELK's threshold of 40 nodes. Implemented for both Y simplex (`removeSubtreeLeaves`/`reattachSubtreeLeaves`) and X simplex (`removeAuxSubtreeLeaves`/`reattachAuxSubtreeLeaves`).
+
 ---
 
 ## Todo
 
-### 1. Subtree Removal (Medium Priority)
-**Reference:** ELK `NetworkSimplex.java` lines ~100-150
+### 1. O(1) Swap-Delete for Adjacency Removal (High Priority)
+**Reference:** Graphviz `ns.c` lines 122-128
 
-Remove leaf nodes (degree 1) before running simplex, reattach trivially after. Reduces problem size significantly for graphs with chains.
+**Problem:** Current `removeFromSlice()` is O(n) per call - it searches linearly then shifts all elements:
 
-**Algorithm:**
+```go
+// Current - O(n) per call, allocates new slice
+func removeFromSlice(slice []string, val string) []string {
+    for i, v := range slice {
+        if v == val {
+            return append(slice[:i], slice[i+1:]...)  // Shift all elements
+        }
+    }
+    return slice
+}
 ```
-1. Find all leaf nodes (degree 1)
-2. Push to stack, remove from graph
-3. Repeat until no leaves remain
-4. Run network simplex on reduced graph
-5. Pop from stack, place at: parent.coord ± edge.delta
+
+This is called in:
+- `removeEdge()` - 2 calls per edge removal
+- `removeAuxSubtreeLeaves()` - 2-4 calls per node removal
+- `exchangeEdges()` - 2 calls per tree rebalance (tight inner loop!)
+
+**Impact:** Creates O(n²) complexity in tight loops instead of intended O(n log n).
+
+**Fix:** Use Graphviz's swap-delete pattern:
+
+```go
+// Better - O(1) per call, no allocation
+func removeFromSlice(slice []string, val string) []string {
+    for i, v := range slice {
+        if v == val {
+            slice[i] = slice[len(slice)-1]  // Swap with last
+            return slice[:len(slice)-1]      // Shrink (no shift)
+        }
+    }
+    return slice
+}
 ```
 
-**ELK details:**
-- Threshold: Only applies for graphs ≥40 nodes
-- Uses stack for LIFO reattachment order
-- Handles both incoming and outgoing single edges
+**Note:** This changes iteration order (adjacency list becomes unordered), but that's fine since we sort for determinism elsewhere.
 
-**Files to modify:** `simplex.go`
+**Files to modify:** `simplex.go` line 84-91
 
-**Expected impact:** 2-10x speedup on graphs with long chains
+**Expected impact:** Fixes algorithmic complexity from O(n²) to O(n log n) in edge exchange loops
 
 ---
 
-### 2. Adjacency Lists for Spanning Tree (Medium Priority)
-**Reference:** All implementations use some form of adjacency tracking
+### 2. Leave Edge Search Limit (Medium Priority)
+**Reference:** Graphviz `ns.c` line 55: `SEARCHSIZE = 30`
 
-Current `neighbors()` iterates ALL tree edges to find neighbors - O(edges) per call. With adjacency lists, it's O(degree).
+**Problem:** Current `leaveEdge()` always scans all tree edges to find one with negative cut value. On pathological graphs, this can be slow.
 
-**Current code (lines 81-89, 911-915):**
+**Graphviz approach:** After finding 30 negative cut value edges, return the best found so far instead of continuing. This provides:
+- Early termination on large graphs
+- Load balancing (circular search from last position)
+
+**Current code:**
 ```go
-func (t *spanningTree) neighbors(v string) []string {
-    var result []string
-    for key := range t.treeEdges {  // O(all edges)
-        if key.from == v {
-            result = append(result, key.to)
-        }
-    }
-    return result
+func (t *spanningTree) leaveEdge(s *layoutState) (edgeKey, bool) {
+    // ... iterates ALL edges, no limit
 }
 ```
 
 **Proposed change:**
 ```go
-type spanningTree struct {
-    nodes     map[string]*treeNode
-    treeEdges map[edgeKey]bool
-    adj       map[string][]string  // NEW: adjacency lists
-    cutValues map[edgeKey]int
-    root      string
-}
+const leaveEdgeSearchLimit = 30
 
-func (t *spanningTree) addEdge(key edgeKey) {
-    t.treeEdges[key] = true
-    t.treeEdges[edgeKey{from: key.to, to: key.from}] = true
-    t.adj[key.from] = append(t.adj[key.from], key.to)  // NEW
-    t.adj[key.to] = append(t.adj[key.to], key.from)    // NEW
-}
-
-func (t *spanningTree) neighbors(v string) []string {
-    return t.adj[v]  // O(1) lookup
+func (t *spanningTree) leaveEdge(s *layoutState) (edgeKey, bool) {
+    found := 0
+    var best edgeKey
+    bestCut := 0
+    // ... iterate edges ...
+    if cutVal < bestCut {
+        best = key
+        bestCut = cutVal
+        found++
+        if found >= leaveEdgeSearchLimit {
+            return best, true
+        }
+    }
 }
 ```
-
-**Files to modify:** `simplex.go` (both Y and X sections)
-
-**Expected impact:** ~2-5x speedup for tree traversal operations
-
----
-
-### 3. Incremental Cut Value Updates (Medium Priority)
-**Reference:** Graphviz `ns.c` - only updates path between swapped edges
-
-Currently recomputes ALL cut values after each edge exchange. Graphviz only updates cut values along the path between the leaving and entering edges.
-
-**Graphviz Algorithm (from ns.c):**
-
-```
-exchangeEdges(leave, enter):
-    1. slack = slack(enter)
-    2. rerank(tailSubtree, delta)           // Adjust ranks to tighten enter edge
-    3. cutvalue = cutValue(leave)
-    4. lca = treeupdate(enter.from, enter.to, cutvalue, true)   // Update path from->LCA
-    5. treeupdate(enter.to, enter.from, cutvalue, false)        // Update path to->LCA
-    6. invalidate_path(lca, enter.from)     // Mark low=-1 for nodes needing DFS update
-    7. invalidate_path(lca, enter.to)
-    8. cutValue(enter) = -cutvalue
-    9. cutValue(leave) = 0
-    10. swap edges in tree
-    11. dfs_range(lca, parent(lca), low(lca))  // Incremental DFS from LCA only
-```
-
-**Key functions:**
-
-1. **treeupdate(v, w, cutvalue, dir)** - Walk from v toward w, adding/subtracting cutvalue:
-   ```go
-   func (t *spanningTree) treeupdate(s *layoutState, v, w string, cutvalue int, dir bool) string {
-       for !t.isDescendant(w, v) {
-           e := parentEdge(v)
-           if v == tail(e) == dir {
-               cutValues[e] += cutvalue
-           } else {
-               cutValues[e] -= cutvalue
-           }
-           v = parent(v)
-       }
-       return v  // LCA
-   }
-   ```
-
-2. **invalidate_path(lca, node)** - Mark nodes for DFS recomputation:
-   ```go
-   func (t *spanningTree) invalidatePath(lca, node string) {
-       for node != lca && low[node] != -1 {
-           low[node] = -1  // Mark as needing recomputation
-           node = parent(node)
-       }
-   }
-   ```
-
-3. **dfs_range(v, parent, low)** - Incremental DFS that skips unchanged subtrees:
-   ```go
-   func (t *spanningTree) dfsRange(v, parent string, low int) int {
-       if t.nodes[v].parent == parent && t.nodes[v].low == low {
-           return t.nodes[v].lim + 1  // Already correct, skip subtree
-       }
-       t.nodes[v].parent = parent
-       t.nodes[v].low = low
-       // DFS children, incrementing counter
-       // Only recurse into children with low == -1 (invalidated)
-       t.nodes[v].lim = counter
-       return counter + 1
-   }
-   ```
-
-**Complexity reduction:** O(n+m) → O(path length) per iteration
 
 **Files to modify:** `simplex.go`
 
-**Expected impact:** 2-10x speedup when many iterations needed
+**Expected impact:** 5-10% speedup on pathological graphs, prevents hangs
 
-**Note:** ELK has a TODO comment noting they should do this but haven't yet.
+---
+
+### 3. Incremental Cut Value Updates (Medium Priority - Deferred)
+**Reference:** Graphviz `ns.c` lines 85-112, 631-703
+
+Currently recomputes ALL cut values after each edge exchange. Graphviz only updates cut values along the path between the leaving and entering edges.
+
+**Status:** Attempted implementation produced incorrect results due to complex edge direction tracking. ELK also uses full recompute with a TODO noting this optimization. Deferred until correctness issues can be resolved.
+
+**Complexity reduction:** O(n+m) → O(path length) per iteration
+
+**Expected impact:** 2-10x speedup when many iterations needed
 
 ---
 
 ### 4. Cached Sorted Lists (Low Priority)
-**Lines:** 348-352, 398-407, 1044-1048, 1086-1092
 
-Currently sorts node/edge lists on every `leaveEdge()` and `enterEdge()` call.
-
-**Current:**
-```go
-func (t *spanningTree) leaveEdge() (edgeKey, bool) {
-    nodeIDs := make([]string, 0, len(t.nodes))
-    for id := range t.nodes {
-        nodeIDs = append(nodeIDs, id)
-    }
-    sort.Strings(nodeIDs)  // Repeated every call
-    // ...
-}
-```
+Currently sorts node/edge lists on every `leaveEdge()` and `enterEdge()` call for determinism.
 
 **Proposed:** Sort once during tree construction, maintain sorted order.
-
-**Files to modify:** `simplex.go`
 
 **Expected impact:** Minor (sorting is fast, but unnecessary work)
 
 ---
 
 ### 5. Generics Consolidation (Low Priority)
-**Observation:** Y simplex and X simplex have nearly identical tree operations with different types.
 
-| Component | Y Simplex | X Simplex |
-|-----------|-----------|-----------|
-| Tree type | `spanningTree` | `xSpanningTree` |
-| Node type | `*treeNode` | `*xAuxNode` |
-| Cut values | `map[edgeKey]int` | `map[xEdgeKey]float64` |
-| Edge key | `edgeKey` | `xEdgeKey` |
-
-**Potential approach:** Use Go generics to create a single parameterized spanning tree type.
-
-```go
-type SpanningTree[K comparable, V numeric] struct {
-    nodes     map[string]*TreeNode[V]
-    treeEdges map[K]bool
-    cutValues map[K]V
-    root      string
-}
-```
+Y simplex and X simplex have nearly identical tree operations with different types. Could use Go generics to reduce code duplication (~400 lines).
 
 **Tradeoff:**
-- Pro: Reduces code duplication (~400 lines)
+- Pro: Reduces code duplication
 - Con: More complex type signatures, harder to read
 - Con: High effort for no runtime benefit
 
@@ -340,7 +269,7 @@ if xs.s.opts.PreventStacking && len(xs.s.nodes) <= 100 {
 }
 ```
 
-A 107-node, 575-edge graph caused the iteration count to explode (`maxIterations = nodes × edges` = 1.36M). Implementing the optimizations above (especially subtree removal and incremental cut values) would allow raising or removing this limit.
+A 107-node, 575-edge graph caused the iteration count to explode (`maxIterations = nodes × edges` = 1.36M). Implementing the O(1) swap-delete fix and leave edge search limit would help enable anti-stacking on larger graphs.
 
 ---
 

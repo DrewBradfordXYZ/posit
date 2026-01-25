@@ -249,22 +249,23 @@ The current `initLowLimValuesIncremental()` doesn't actually implement increment
 
 ### Benchmark Results (All Optimizations)
 
-Total measured improvement: **51% faster overall** (geometric mean across all benchmarks).
+Total measured improvement: **57% faster overall** (geometric mean across all benchmarks).
 
 | Benchmark | Baseline | Final | Improvement |
 |-----------|----------|-------|-------------|
-| X_Simplex_Layered20x5 | 287ms | 69ms | **76% faster** |
-| Y_Layered20x5 | 40.8ms | 19.4ms | **52% faster** |
-| X_Simplex_Layered10x5 | 40.5ms | 15.0ms | **63% faster** |
-| Y_Layered10x5 | 7.6ms | 3.9ms | **49% faster** |
-| AntiStack_Layered10x5 | 34.6ms | 17.0ms | **51% faster** |
-| Y_Chain200 | 2.0ms | 1.8ms | **13% faster** |
-| Y_Diamond25 | 4.2ms | 3.8ms | **11% faster** |
+| X_Simplex_Layered20x5 | 288ms | 61ms | **79% faster** |
+| X_Simplex_Layered10x5 | 40.5ms | 13.5ms | **67% faster** |
+| Y_Layered20x5 | 40.8ms | 17.7ms | **57% faster** |
+| AntiStack_Layered10x5 | 34.6ms | 15.0ms | **57% faster** |
+| Y_Layered10x5 | 7.6ms | 3.6ms | **53% faster** |
+| Y_Chain200 | 2.0ms | 1.65ms | **19% faster** |
+| Y_Diamond25 | 4.2ms | 3.5ms | **17% faster** |
 
 **Optimization breakdown:**
 - Adjacency lists + subtree removal: ~23% improvement
 - O(1) swap-delete + search limit: additional ~8% improvement
-- Incremental cut values: additional ~31% improvement
+- Incremental cut values: additional ~20% improvement
+- Cached sorted lists + circular search: additional ~10% improvement
 
 Layered graphs benefit most from the full optimization suite. X simplex sees the largest gains due to the auxiliary graph having more edges.
 

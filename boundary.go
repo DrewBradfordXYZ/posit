@@ -299,8 +299,8 @@ func (s *layoutState) assignPortSideFromBoundary(node *layoutNode, port *PortOpt
 		votes[side]++
 	}
 
-	// Return side with most votes
-	var bestSide Side
+	// Return side with most votes (default to axis-appropriate side if no votes)
+	bestSide := s.defaultSide(port.Axis)
 	var maxVotes int
 	for side, count := range votes {
 		if count > maxVotes {

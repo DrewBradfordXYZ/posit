@@ -270,3 +270,240 @@ func TestNodeRect(t *testing.T) {
 		t.Errorf("expected Bottom=70, got %v", r.Bottom)
 	}
 }
+
+// ==================== Port Boundary Selection Tests ====================
+
+func TestEdgePortSideBoundary_HorizontalAxis_RightTarget(t *testing.T) {
+	// Port on node A with PortAxisHorizontal, target B is to the right
+	s := &layoutState{
+		opts: Options{Direction: TopToBottom},
+	}
+	thisNode := &layoutNode{x: 0, y: 0, width: 100, height: 50}
+	connNode := &layoutNode{x: 200, y: 0, width: 100, height: 50}
+	port := &PortOptions{
+		Axis:   PortAxisHorizontal,
+		Offset: 25, // Middle of height
+	}
+
+	side := s.edgePortSideBoundary(port, thisNode, connNode)
+
+	// Target is to the right, so port should be on Right side
+	if side != Right {
+		t.Errorf("expected Right (target to right), got %v", side)
+	}
+}
+
+func TestEdgePortSideBoundary_HorizontalAxis_LeftTarget(t *testing.T) {
+	// Port on node A with PortAxisHorizontal, target B is to the left
+	s := &layoutState{
+		opts: Options{Direction: TopToBottom},
+	}
+	thisNode := &layoutNode{x: 200, y: 0, width: 100, height: 50}
+	connNode := &layoutNode{x: 0, y: 0, width: 100, height: 50}
+	port := &PortOptions{
+		Axis:   PortAxisHorizontal,
+		Offset: 25,
+	}
+
+	side := s.edgePortSideBoundary(port, thisNode, connNode)
+
+	// Target is to the left, so port should be on Left side
+	if side != Left {
+		t.Errorf("expected Left (target to left), got %v", side)
+	}
+}
+
+func TestEdgePortSideBoundary_VerticalAxis_BottomTarget(t *testing.T) {
+	// Port on node A with PortAxisVertical, target B is below
+	s := &layoutState{
+		opts: Options{Direction: TopToBottom},
+	}
+	thisNode := &layoutNode{x: 0, y: 0, width: 100, height: 50}
+	connNode := &layoutNode{x: 0, y: 150, width: 100, height: 50}
+	port := &PortOptions{
+		Axis:   PortAxisVertical,
+		Offset: 50, // Middle of width
+	}
+
+	side := s.edgePortSideBoundary(port, thisNode, connNode)
+
+	// Target is below, so port should be on Bottom side
+	if side != Bottom {
+		t.Errorf("expected Bottom (target below), got %v", side)
+	}
+}
+
+func TestEdgePortSideBoundary_VerticalAxis_TopTarget(t *testing.T) {
+	// Port on node A with PortAxisVertical, target B is above
+	s := &layoutState{
+		opts: Options{Direction: TopToBottom},
+	}
+	thisNode := &layoutNode{x: 0, y: 150, width: 100, height: 50}
+	connNode := &layoutNode{x: 0, y: 0, width: 100, height: 50}
+	port := &PortOptions{
+		Axis:   PortAxisVertical,
+		Offset: 50,
+	}
+
+	side := s.edgePortSideBoundary(port, thisNode, connNode)
+
+	// Target is above, so port should be on Top side
+	if side != Top {
+		t.Errorf("expected Top (target above), got %v", side)
+	}
+}
+
+func TestEdgePortSideBoundary_AxisAny_Diagonal(t *testing.T) {
+	// Port with no axis constraint, target is diagonal
+	s := &layoutState{
+		opts: Options{Direction: TopToBottom},
+	}
+	thisNode := &layoutNode{x: 0, y: 0, width: 100, height: 50}
+	connNode := &layoutNode{x: 200, y: 150, width: 100, height: 50}
+	port := &PortOptions{
+		Axis: PortAxisAny,
+	}
+
+	side := s.edgePortSideBoundary(port, thisNode, connNode)
+
+	// Diagonal target - should pick the side based on boundary intersection
+	// For a 100x50 rectangle, target at (250, 175), the ray will likely exit Right or Bottom
+	if side != Right && side != Bottom {
+		t.Errorf("expected Right or Bottom (diagonal target), got %v", side)
+	}
+}
+
+func TestEdgePortSideBoundary_LeftToRight_Direction(t *testing.T) {
+	// Test with LeftToRight direction - coordinate transforms should work
+	s := &layoutState{
+		opts: Options{Direction: LeftToRight},
+	}
+	// In LTR internal space, "below" means "to the right" in user space
+	thisNode := &layoutNode{x: 0, y: 0, width: 50, height: 100} // Note: swapped for LTR
+	connNode := &layoutNode{x: 0, y: 200, width: 50, height: 100}
+	port := &PortOptions{
+		Axis:   PortAxisHorizontal, // Horizontal in user space = vertical sides
+		Offset: 50,
+	}
+
+	side := s.edgePortSideBoundary(port, thisNode, connNode)
+
+	// In user space (LTR), the port should be on Right side
+	if side != Right {
+		t.Errorf("expected Right in LTR direction, got %v", side)
+	}
+}
+
+func TestAssignPortSideFromBoundary_SingleConnection(t *testing.T) {
+	// Test voting with single connected node
+	nodeA := &layoutNode{id: "A", x: 0, y: 0, width: 100, height: 50}
+	nodeB := &layoutNode{id: "B", x: 200, y: 0, width: 100, height: 50}
+
+	edgeAB := &layoutEdge{key: edgeKey{from: "A", to: "B"}, sourcePort: "p1"}
+	s := &layoutState{
+		opts:  Options{Direction: TopToBottom},
+		nodes: map[string]*layoutNode{"A": nodeA, "B": nodeB},
+		edges: map[edgeKey]*layoutEdge{edgeAB.key: edgeAB},
+	}
+
+	port := &PortOptions{
+		ID:   "p1",
+		Axis: PortAxisHorizontal,
+	}
+
+	side := s.assignPortSideFromBoundary(nodeA, port)
+
+	// B is to the right, should vote for Right
+	if side != Right {
+		t.Errorf("expected Right (single vote for right target), got %v", side)
+	}
+}
+
+func TestAssignPortSideFromBoundary_MultipleConnections_Voting(t *testing.T) {
+	// Test voting with multiple connected nodes - majority wins
+	nodeA := &layoutNode{id: "A", x: 100, y: 100, width: 100, height: 50}
+	nodeB := &layoutNode{id: "B", x: 300, y: 100, width: 100, height: 50} // Right
+	nodeC := &layoutNode{id: "C", x: 300, y: 200, width: 100, height: 50} // Right-below
+	nodeD := &layoutNode{id: "D", x: 0, y: 100, width: 50, height: 50}    // Left
+
+	edgeAB := &layoutEdge{key: edgeKey{from: "A", to: "B"}, sourcePort: "p1"}
+	edgeAC := &layoutEdge{key: edgeKey{from: "A", to: "C"}, sourcePort: "p1"}
+	edgeAD := &layoutEdge{key: edgeKey{from: "A", to: "D"}, sourcePort: "p1"}
+	s := &layoutState{
+		opts:  Options{Direction: TopToBottom},
+		nodes: map[string]*layoutNode{"A": nodeA, "B": nodeB, "C": nodeC, "D": nodeD},
+		edges: map[edgeKey]*layoutEdge{
+			edgeAB.key: edgeAB,
+			edgeAC.key: edgeAC,
+			edgeAD.key: edgeAD,
+		},
+	}
+
+	port := &PortOptions{
+		ID:   "p1",
+		Axis: PortAxisHorizontal,
+	}
+
+	side := s.assignPortSideFromBoundary(nodeA, port)
+
+	// B and C vote Right, D votes Left → Right wins
+	if side != Right {
+		t.Errorf("expected Right (2 votes right, 1 vote left), got %v", side)
+	}
+}
+
+func TestAssignPortSideFromBoundary_NoConnections_DefaultSide(t *testing.T) {
+	// Test that empty connections returns default side
+	nodeA := &layoutNode{id: "A", x: 0, y: 0, width: 100, height: 50}
+
+	s := &layoutState{
+		opts:  Options{Direction: TopToBottom},
+		nodes: map[string]*layoutNode{"A": nodeA},
+		edges: map[edgeKey]*layoutEdge{}, // No edges
+	}
+
+	// Test horizontal axis - should default to Right
+	portH := &PortOptions{
+		ID:   "p1",
+		Axis: PortAxisHorizontal,
+	}
+	sideH := s.assignPortSideFromBoundary(nodeA, portH)
+	if sideH != Right {
+		t.Errorf("expected Right (default for horizontal), got %v", sideH)
+	}
+
+	// Test vertical axis - should default to Bottom
+	portV := &PortOptions{
+		ID:   "p2",
+		Axis: PortAxisVertical,
+	}
+	sideV := s.assignPortSideFromBoundary(nodeA, portV)
+	if sideV != Bottom {
+		t.Errorf("expected Bottom (default for vertical), got %v", sideV)
+	}
+}
+
+func TestAssignPortSideFromBoundary_TargetPort(t *testing.T) {
+	// Test that target ports also work (edge.targetPort matches)
+	nodeA := &layoutNode{id: "A", x: 200, y: 0, width: 100, height: 50}
+	nodeB := &layoutNode{id: "B", x: 0, y: 0, width: 100, height: 50}
+
+	edgeBA := &layoutEdge{key: edgeKey{from: "B", to: "A"}, targetPort: "p1"}
+	s := &layoutState{
+		opts:  Options{Direction: TopToBottom},
+		nodes: map[string]*layoutNode{"A": nodeA, "B": nodeB},
+		edges: map[edgeKey]*layoutEdge{edgeBA.key: edgeBA},
+	}
+
+	port := &PortOptions{
+		ID:   "p1",
+		Axis: PortAxisHorizontal,
+	}
+
+	side := s.assignPortSideFromBoundary(nodeA, port)
+
+	// B is to the left of A, so port on A should be on Left
+	if side != Left {
+		t.Errorf("expected Left (source B is to the left), got %v", side)
+	}
+}

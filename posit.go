@@ -217,6 +217,20 @@ type Options struct {
 	// This prevents tall nodes from visually overlapping across layers.
 	// Default: 0 (disabled, uses fixed RankSep only).
 	NodeNodeBetweenLayers float64
+
+	// SpreadStackedNodes enables horizontal spreading of nodes that are
+	// nearly vertically aligned ("stacked"). When nodes are stacked, port-side
+	// selection becomes ambiguous, causing edge crossings. Spreading nodes
+	// apart horizontally creates unambiguous port-side selection.
+	// Default: false (disabled).
+	SpreadStackedNodes bool
+
+	// StackingThreshold is the X-distance within which nodes are considered
+	// "stacked" (nearly vertically aligned). Nodes with centers within this
+	// distance of a shared target are candidates for spreading.
+	// Default: 0 (auto-calculate as 50% of average node width).
+	// Only used when SpreadStackedNodes is true.
+	StackingThreshold float64
 }
 
 // DefaultOptions returns sensible defaults for layout.
@@ -715,10 +729,13 @@ func (g *Graph) LayoutWithError(opts ...Options) (*Layout, error) {
 	// Phase 5a: Resolve cross-layer overlaps (if NodeNodeBetweenLayers > 0)
 	state.resolveCrossLayerOverlaps()
 
-	// Phase 5b: Compute auto port offsets (PortFixedSide, PortFixedOrder)
+	// Phase 5b: Spread stacked nodes for edge clarity (if SpreadStackedNodes)
+	state.spreadStackedNodes()
+
+	// Phase 5c: Compute auto port offsets (PortFixedSide, PortFixedOrder)
 	state.computePortOffsets()
 
-	// Phase 5c: Pack disconnected components
+	// Phase 5d: Pack disconnected components
 	state.packComponents()
 
 	// Phase 6: Route edges and restore reversed edges
@@ -826,6 +843,7 @@ func (g *Graph) IncrementalLayout(base *Layout, changes IncrementalOptions, opts
 	}
 
 	state.resolveCrossLayerOverlaps()
+	state.spreadStackedNodes()
 	state.computePortOffsets()
 	state.packComponents()
 	state.routeEdges()

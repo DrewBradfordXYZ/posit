@@ -420,8 +420,10 @@ func (s *layoutState) inferEdgeSides() {
 		}
 
 		// Source side
+		var sourcePort *PortOptions
 		if edge.sourcePort != "" {
 			if port := s.getPort(fromNode, edge.sourcePort); port != nil {
+				sourcePort = port
 				edge.sourceSide = s.edgePortSide(port, fromNode, toNode)
 			} else {
 				edge.sourceSide, _ = s.inferSideDispatch(fromNode, toNode)
@@ -431,8 +433,10 @@ func (s *layoutState) inferEdgeSides() {
 		}
 
 		// Target side
+		var targetPort *PortOptions
 		if edge.targetPort != "" {
 			if port := s.getPort(toNode, edge.targetPort); port != nil {
+				targetPort = port
 				edge.targetSide = s.edgePortSide(port, toNode, fromNode)
 			} else {
 				_, edge.targetSide = s.inferSideDispatch(fromNode, toNode)
@@ -440,7 +444,32 @@ func (s *layoutState) inferEdgeSides() {
 		} else {
 			_, edge.targetSide = s.inferSideDispatch(fromNode, toNode)
 		}
+
+		// For stacked nodes with axis-constrained ports, coordinate sides.
+		// When nodes are horizontally overlapping, both should use the same side
+		// to create clean vertical edges instead of diagonal crossings.
+		if sourcePort != nil && targetPort != nil {
+			if sourcePort.Axis == PortAxisHorizontal && targetPort.Axis == PortAxisHorizontal {
+				if s.nodesAreStacked(fromNode, toNode) {
+					// Use source's side for both — creates consistent vertical routing
+					edge.targetSide = edge.sourceSide
+				}
+			}
+		}
 	}
+}
+
+// nodesAreStacked returns true if the nodes' horizontal bounds overlap,
+// meaning they are "stacked" vertically and should use matching port sides.
+func (s *layoutState) nodesAreStacked(a, b *layoutNode) bool {
+	// Check if either node's center is within the other's horizontal bounds
+	aCenterX := a.x + a.width/2
+	bCenterX := b.x + b.width/2
+
+	aInB := bCenterX >= a.x && bCenterX <= a.x+a.width
+	bInA := aCenterX >= b.x && aCenterX <= b.x+b.width
+
+	return aInB || bInA
 }
 
 // inferSideDispatch determines source and target sides using geometric

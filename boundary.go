@@ -187,27 +187,65 @@ func (s *layoutState) edgePortSideBoundary(port *PortOptions, thisNode, connNode
 	// Result.Side is in internal space - transform to user space
 	side := s.internalToUserSide(result.Side)
 
-	// Apply axis constraint (in user space): if intersection is on wrong axis, force to correct side
+	// Apply dead zone fix for axis-constrained ports.
+	// Compare positions in USER SPACE to avoid flipping on tiny differences.
 	switch port.Axis {
 	case PortAxisHorizontal:
-		if side == Top || side == Bottom {
-			// Transform direction to user space to determine side
-			dx, dy := tgtPoint.X-portPoint.X, tgtPoint.Y-portPoint.Y
-			dx, dy = s.internalToUserDirection(dx, dy)
-			if dx >= 0 {
-				return Right
-			}
+		// For horizontal axis ports, we want Left or Right in USER space.
+		var nodeMin, nodeMax, connPos float64
+		switch s.opts.Direction {
+		case LeftToRight:
+			nodeMin, nodeMax = thisNode.y, thisNode.y+thisNode.height
+			connPos = connNode.y + connNode.height/2
+		case RightToLeft:
+			nodeMin, nodeMax = -(thisNode.y + thisNode.height), -thisNode.y
+			connPos = -(connNode.y + connNode.height/2)
+		default: // TopToBottom, BottomToTop
+			nodeMin, nodeMax = thisNode.x, thisNode.x+thisNode.width
+			connPos = connNode.x + connNode.width/2
+		}
+
+		if connPos < nodeMin {
 			return Left
+		} else if connPos > nodeMax {
+			return Right
+		} else {
+			distToLeft := connPos - nodeMin
+			distToRight := nodeMax - connPos
+			if distToLeft < distToRight {
+				return Left
+			}
+			return Right
 		}
 	case PortAxisVertical:
-		if side == Left || side == Right {
-			// Transform direction to user space to determine side
-			dx, dy := tgtPoint.X-portPoint.X, tgtPoint.Y-portPoint.Y
-			dx, dy = s.internalToUserDirection(dx, dy)
-			if dy >= 0 {
-				return Bottom
-			}
+		// For vertical axis ports, we want Top or Bottom in USER space.
+		var nodeMin, nodeMax, connPos float64
+		switch s.opts.Direction {
+		case LeftToRight:
+			nodeMin, nodeMax = -(thisNode.x + thisNode.width), -thisNode.x
+			connPos = -(connNode.x + connNode.width/2)
+		case RightToLeft:
+			nodeMin, nodeMax = thisNode.x, thisNode.x+thisNode.width
+			connPos = connNode.x + connNode.width/2
+		case BottomToTop:
+			nodeMin, nodeMax = -(thisNode.y + thisNode.height), -thisNode.y
+			connPos = -(connNode.y + connNode.height/2)
+		default: // TopToBottom
+			nodeMin, nodeMax = thisNode.y, thisNode.y+thisNode.height
+			connPos = connNode.y + connNode.height/2
+		}
+
+		if connPos < nodeMin {
 			return Top
+		} else if connPos > nodeMax {
+			return Bottom
+		} else {
+			distToTop := connPos - nodeMin
+			distToBottom := nodeMax - connPos
+			if distToTop < distToBottom {
+				return Top
+			}
+			return Bottom
 		}
 	}
 
@@ -277,23 +315,77 @@ func (s *layoutState) assignPortSideFromBoundary(node *layoutNode, port *PortOpt
 		// Result.Side is in internal space - transform to user space
 		side := s.internalToUserSide(result.Side)
 
-		// Apply axis constraint (in user space)
-		if port.Axis == PortAxisHorizontal && (side == Top || side == Bottom) {
-			// Transform connected node direction to user space to determine side
-			dx, dy := connCenter.X-portPoint.X, connCenter.Y-portPoint.Y
-			dx, dy = s.internalToUserDirection(dx, dy)
-			if dx >= 0 {
+		// Apply dead zone fix for axis-constrained ports.
+		// Compare positions in USER SPACE to avoid flipping on tiny differences.
+		// The direction determines which internal axis maps to user X vs Y.
+		if port.Axis == PortAxisHorizontal {
+			// For horizontal axis ports, we want Left or Right in USER space.
+			// Map internal coordinates to user-space horizontal positions.
+			var nodeMin, nodeMax, connPos float64
+			switch s.opts.Direction {
+			case LeftToRight:
+				// User X = Internal Y (flow goes left-to-right, so Y is horizontal)
+				nodeMin, nodeMax = node.y, node.y+node.height
+				connPos = conn.y + conn.height/2
+			case RightToLeft:
+				// User X = -Internal Y (reversed)
+				nodeMin, nodeMax = -(node.y + node.height), -node.y
+				connPos = -(conn.y + conn.height/2)
+			default: // TopToBottom, BottomToTop
+				// User X = Internal X
+				nodeMin, nodeMax = node.x, node.x+node.width
+				connPos = conn.x + conn.width/2
+			}
+
+			if connPos < nodeMin {
+				side = Left
+			} else if connPos > nodeMax {
 				side = Right
 			} else {
-				side = Left
+				// Target is within source bounds - pick closer edge
+				distToLeft := connPos - nodeMin
+				distToRight := nodeMax - connPos
+				if distToLeft < distToRight {
+					side = Left
+				} else {
+					side = Right
+				}
 			}
-		} else if port.Axis == PortAxisVertical && (side == Left || side == Right) {
-			dx, dy := connCenter.X-portPoint.X, connCenter.Y-portPoint.Y
-			dx, dy = s.internalToUserDirection(dx, dy)
-			if dy >= 0 {
+		} else if port.Axis == PortAxisVertical {
+			// For vertical axis ports, we want Top or Bottom in USER space.
+			// Map internal coordinates to user-space vertical positions.
+			var nodeMin, nodeMax, connPos float64
+			switch s.opts.Direction {
+			case LeftToRight:
+				// User Y = -Internal X (flow goes left-to-right)
+				nodeMin, nodeMax = -(node.x + node.width), -node.x
+				connPos = -(conn.x + conn.width/2)
+			case RightToLeft:
+				// User Y = Internal X
+				nodeMin, nodeMax = node.x, node.x+node.width
+				connPos = conn.x + conn.width/2
+			case BottomToTop:
+				// User Y = -Internal Y
+				nodeMin, nodeMax = -(node.y + node.height), -node.y
+				connPos = -(conn.y + conn.height/2)
+			default: // TopToBottom
+				// User Y = Internal Y
+				nodeMin, nodeMax = node.y, node.y+node.height
+				connPos = conn.y + conn.height/2
+			}
+
+			if connPos < nodeMin {
+				side = Top
+			} else if connPos > nodeMax {
 				side = Bottom
 			} else {
-				side = Top
+				distToTop := connPos - nodeMin
+				distToBottom := nodeMax - connPos
+				if distToTop < distToBottom {
+					side = Top
+				} else {
+					side = Bottom
+				}
 			}
 		}
 		votes[side]++

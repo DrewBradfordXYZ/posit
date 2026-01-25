@@ -367,6 +367,22 @@ func BenchmarkLayout_CHDI(b *testing.B) {
 	}
 }
 
+func BenchmarkLayout_CHDI_XSimplex(b *testing.B) {
+	g := buildCHDIGraph()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		g.Layout(Options{XCoordAlgorithm: XNetworkSimplex})
+	}
+}
+
+func BenchmarkLayout_CHDI_XSimplex_AntiStack(b *testing.B) {
+	g := buildCHDIGraph()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		g.Layout(Options{XCoordAlgorithm: XNetworkSimplex, PreventStacking: true})
+	}
+}
+
 // --- Metric Functions ---
 
 // countLayoutCrossings counts edge crossings by testing segments from

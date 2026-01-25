@@ -444,12 +444,23 @@ func (s *layoutState) inferEdgeSides() {
 // For PortFixedOffset: per-edge side based on direction to the specific connected node,
 // constrained by the port's axis. This ensures each edge exits toward its target
 // rather than using an averaged direction across all connections.
+//
+// When nodes have significant overlap on the constrained axis (>50% of smaller node),
+// same-side routing is used to avoid edges crossing through overlapping node areas.
+// This handles the common case of vertically-stacked nodes with slight horizontal offset.
+//
 // For other constraints: uses the port's pre-computed side (user space, converted to internal).
 //
 // Returns an internal-space side that undoDirectionAdjustment will transform to user space.
 func (s *layoutState) edgePortSide(port *PortOptions, thisNode, connNode *layoutNode) Side {
 	if port.Constraint == PortFixedOffset {
-		// Per-edge: direction to this specific connected node (internal coords)
+		// Check for significant overlap - if nodes are nearly stacked,
+		// use same-side routing to avoid edges crossing through node areas.
+		if side, ok := s.overlapAwareSide(thisNode, connNode, port.Axis); ok {
+			return s.portSideToInternal(side)
+		}
+
+		// No significant overlap: use direction to connected node
 		dx := (connNode.x + connNode.width/2) - (thisNode.x + thisNode.width/2)
 		dy := (connNode.y + connNode.height/2) - (thisNode.y + thisNode.height/2)
 		// Transform to user space (axis constraints are defined in user space)
@@ -460,6 +471,42 @@ func (s *layoutState) edgePortSide(port *PortOptions, thisNode, connNode *layout
 	}
 	// port.Side is in user space (set by assignFreeSides); convert to internal.
 	return s.portSideToInternal(port.Side)
+}
+
+// overlapAwareSide uses node boundaries to determine edge attachment side.
+// When nodes have a clear horizontal gap, edges face each other (opposite sides).
+// When nodes overlap horizontally, edges use same-side routing to avoid crossing.
+//
+// This is more precise than center-to-center direction because it uses actual
+// node boundaries rather than a heuristic based on center positions.
+func (s *layoutState) overlapAwareSide(thisNode, connNode *layoutNode, axis PortAxis) (Side, bool) {
+	// Only apply for horizontal axis ports in vertical flow directions.
+	if axis != PortAxisHorizontal {
+		return Top, false
+	}
+	if s.opts.Direction != TopToBottom && s.opts.Direction != BottomToTop {
+		return Top, false
+	}
+
+	// Node boundaries in internal coordinates
+	thisLeft := thisNode.x
+	thisRight := thisNode.x + thisNode.width
+	connLeft := connNode.x
+	connRight := connNode.x + connNode.width
+
+	// Check for clear horizontal gap (no overlap)
+	if thisRight < connLeft {
+		// Connected node is clearly to the right → use opposite sides (Right→Left)
+		return Top, false // Let default direction-based logic handle it
+	}
+	if connRight < thisLeft {
+		// Connected node is clearly to the left → use opposite sides (Left→Right)
+		return Top, false // Let default direction-based logic handle it
+	}
+
+	// Nodes overlap horizontally → use same-side routing
+	// Both source and target exit/enter from Right, creating a detour arc
+	return Right, true
 }
 
 // inferSide determines the optimal source and target sides based on relative positions.

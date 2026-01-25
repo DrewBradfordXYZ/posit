@@ -113,12 +113,46 @@ type conflictKey struct {
 	v, w string
 }
 
-// assignXCoordinatesBK uses the Brandes-Kopf algorithm.
+// assignXCoordinatesBK uses the Brandes-Kopf algorithm with optional
+// iterative stacking prevention. When SpreadStackedNodes is enabled,
+// it detects stacked pairs after the initial pass and adds separation
+// constraints, then re-runs BK until no new stacking is found.
 func (s *layoutState) assignXCoordinatesBK() {
 	if len(s.layers) == 0 {
 		return
 	}
 
+	// Maximum iterations for stacking prevention (prevents infinite loops)
+	maxIterations := 3
+	if !s.opts.SpreadStackedNodes {
+		maxIterations = 1 // Single pass when feature is disabled
+	}
+
+	for iteration := 0; iteration < maxIterations; iteration++ {
+		s.runBKPass()
+
+		// Skip constraint detection on final iteration or if feature disabled
+		if !s.opts.SpreadStackedNodes || iteration == maxIterations-1 {
+			break
+		}
+
+		// Detect stacking and generate constraints
+		newConstraints := s.detectStackingConstraints()
+		if len(newConstraints) == 0 {
+			break // No stacking found, converged
+		}
+
+		// Add new constraints (avoid duplicates)
+		for _, c := range newConstraints {
+			if !s.hasConstraint(c) {
+				s.separationConstraints = append(s.separationConstraints, c)
+			}
+		}
+	}
+}
+
+// runBKPass executes one pass of the Brandes-Köpf algorithm.
+func (s *layoutState) runBKPass() {
 	// Find type-1 conflicts (shared across all 4 passes)
 	conflicts := s.findType1Conflicts()
 
@@ -194,6 +228,128 @@ func (s *layoutState) assignXCoordinatesBK() {
 		}
 	}
 }
+
+// detectStackingConstraints finds stacked node pairs and returns separation
+// constraints that should be added to prevent stacking.
+//
+// Strategy: For each "convergence point" (node receiving edges from multiple
+// same-layer sources), if those sources are within stacking threshold of each
+// other, add a constraint to spread them apart. Similarly for "divergence points".
+func (s *layoutState) detectStackingConstraints() []separationConstraint {
+	var constraints []separationConstraint
+
+	threshold := s.opts.StackingThreshold
+	if threshold <= 0 {
+		threshold = s.averageNodeWidth() * 0.5
+	}
+
+	// Check each layer for convergence/divergence points
+	for rank := 0; rank < len(s.layers)-1; rank++ {
+		upperLayer := s.layers[rank]
+		lowerLayer := s.layers[rank+1]
+
+		// Find convergence points: nodes in lower layer receiving from multiple upper nodes
+		for _, lowerID := range lowerLayer {
+			lowerNode := s.nodes[lowerID]
+			if lowerNode == nil || lowerNode.isDummy {
+				continue
+			}
+
+			// Find upper nodes that connect to this lower node
+			var sources []*layoutNode
+			for _, upperID := range upperLayer {
+				upperNode := s.nodes[upperID]
+				if upperNode == nil || upperNode.isDummy {
+					continue
+				}
+				if s.hasEdgeBetween(upperID, lowerID) {
+					sources = append(sources, upperNode)
+				}
+			}
+
+			// Check if any pair of sources is stacked (centers too close)
+			for i := 0; i < len(sources); i++ {
+				for j := i + 1; j < len(sources); j++ {
+					a, b := sources[i], sources[j]
+					aCenterX := a.x + a.width/2
+					bCenterX := b.x + b.width/2
+					xDiff := math.Abs(aCenterX - bCenterX)
+
+					if xDiff < threshold {
+						// These sources are stacked - need separation
+						// Order by current position (left, right)
+						leftID, rightID := a.id, b.id
+						if aCenterX > bCenterX {
+							leftID, rightID = b.id, a.id
+						}
+						constraints = append(constraints, separationConstraint{
+							leftID:  leftID,
+							rightID: rightID,
+							minGap:  threshold + s.opts.NodeSep/2,
+						})
+					}
+				}
+			}
+		}
+
+		// Find divergence points: nodes in upper layer sending to multiple lower nodes
+		for _, upperID := range upperLayer {
+			upperNode := s.nodes[upperID]
+			if upperNode == nil || upperNode.isDummy {
+				continue
+			}
+
+			// Find lower nodes that this upper node connects to
+			var targets []*layoutNode
+			for _, lowerID := range lowerLayer {
+				lowerNode := s.nodes[lowerID]
+				if lowerNode == nil || lowerNode.isDummy {
+					continue
+				}
+				if s.hasEdgeBetween(upperID, lowerID) {
+					targets = append(targets, lowerNode)
+				}
+			}
+
+			// Check if any pair of targets is stacked
+			for i := 0; i < len(targets); i++ {
+				for j := i + 1; j < len(targets); j++ {
+					a, b := targets[i], targets[j]
+					aCenterX := a.x + a.width/2
+					bCenterX := b.x + b.width/2
+					xDiff := math.Abs(aCenterX - bCenterX)
+
+					if xDiff < threshold {
+						// These targets are stacked - need separation
+						leftID, rightID := a.id, b.id
+						if aCenterX > bCenterX {
+							leftID, rightID = b.id, a.id
+						}
+						constraints = append(constraints, separationConstraint{
+							leftID:  leftID,
+							rightID: rightID,
+							minGap:  threshold + s.opts.NodeSep/2,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	return constraints
+}
+
+// hasConstraint checks if an equivalent constraint already exists.
+func (s *layoutState) hasConstraint(c separationConstraint) bool {
+	for _, existing := range s.separationConstraints {
+		if (existing.leftID == c.leftID && existing.rightID == c.rightID) ||
+			(existing.leftID == c.rightID && existing.rightID == c.leftID) {
+			return true
+		}
+	}
+	return false
+}
+
 
 // getPredecessors returns predecessors as a slice.
 func (s *layoutState) getPredecessors(id string) []string {
@@ -507,6 +663,18 @@ func (s *layoutState) separation(leftID, rightID string) float64 {
 				if padding, ok := s.clusters[rightParent]; ok {
 					sep += padding
 				}
+			}
+		}
+	}
+
+	// Check for auto-generated separation constraints (stacking prevention).
+	// These are added during iterative coordinate assignment when stacked
+	// pairs are detected.
+	for _, c := range s.separationConstraints {
+		if (c.leftID == leftID && c.rightID == rightID) ||
+			(c.leftID == rightID && c.rightID == leftID) {
+			if c.minGap > sep {
+				sep = c.minGap
 			}
 		}
 	}

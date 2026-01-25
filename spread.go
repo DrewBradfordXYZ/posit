@@ -1,7 +1,6 @@
 package posit
 
 import (
-	"fmt"
 	"math"
 	"sort"
 )
@@ -85,9 +84,6 @@ func (s *layoutState) spreadStackedNodes() {
 // nudgeStackedPairs finds pairs of connected nodes that are stacked and nudges
 // one of them horizontally so edges can route cleanly on one side.
 func (s *layoutState) nudgeStackedPairs(upperLayer, lowerLayer []string, threshold float64) {
-	fmt.Printf("[NUDGE] Checking layers: upper=%d nodes, lower=%d nodes, threshold=%.1f\n",
-		len(upperLayer), len(lowerLayer), threshold)
-
 	// Track which nodes we've already nudged to avoid double-processing
 	nudged := make(map[string]bool)
 
@@ -126,17 +122,12 @@ func (s *layoutState) nudgeStackedPairs(upperLayer, lowerLayer []string, thresho
 			lowerCenterX := lowerNode.x + lowerNode.width/2
 			xDiff := math.Abs(upperCenterX - lowerCenterX)
 
-			fmt.Printf("[NUDGE] Pair %s→%s: upperCenter=%.1f, lowerCenter=%.1f, diff=%.1f, threshold=%.1f\n",
-				upperID, lowerID, upperCenterX, lowerCenterX, xDiff, threshold)
-
 			if xDiff >= threshold {
-				fmt.Printf("[NUDGE]   Skipping - not stacked (diff %.1f >= threshold %.1f)\n", xDiff, threshold)
 				continue // Not stacked
 			}
 
 			// They're stacked - nudge the upper node so its center is outside
 			// the lower node's bounds (or vice versa, pick the smaller shift)
-			fmt.Printf("[NUDGE]   STACKED! Calling nudgeApart\n")
 			s.nudgeApart(upperNode, lowerNode)
 			nudged[upperID] = true
 			nudged[lowerID] = true
@@ -147,15 +138,11 @@ func (s *layoutState) nudgeStackedPairs(upperLayer, lowerLayer []string, thresho
 // nudgeApart moves two stacked nodes apart so one's center is outside the other's bounds.
 // Nudges the node that requires the smaller shift.
 func (s *layoutState) nudgeApart(upper, lower *layoutNode) {
-	upperCenterX := upper.x + upper.width/2
-	lowerCenterX := lower.x + lower.width/2
-
-	fmt.Printf("[NUDGE] nudgeApart: upper=%s (x=%.1f, w=%.1f, center=%.1f), lower=%s (x=%.1f, w=%.1f, center=%.1f)\n",
-		upper.id, upper.x, upper.width, upperCenterX, lower.id, lower.x, lower.width, lowerCenterX)
-
 	// Calculate how much to shift to get upper's center outside lower's bounds
 	// or lower's center outside upper's bounds
 	margin := 15.0 // Small margin for clarity
+	upperCenterX := upper.x + upper.width/2
+	lowerCenterX := lower.x + lower.width/2
 
 	// Option 1: Move upper so its center is left of lower's left edge
 	shiftUpperLeft := upperCenterX - (lower.x - margin)
@@ -165,9 +152,6 @@ func (s *layoutState) nudgeApart(upper, lower *layoutNode) {
 	shiftLowerLeft := lowerCenterX - (upper.x - margin)
 	// Option 4: Move lower so its center is right of upper's right edge
 	shiftLowerRight := (upper.x + upper.width + margin) - lowerCenterX
-
-	fmt.Printf("[NUDGE]   Options: upperLeft=%.1f, upperRight=%.1f, lowerLeft=%.1f, lowerRight=%.1f\n",
-		shiftUpperLeft, shiftUpperRight, shiftLowerLeft, shiftLowerRight)
 
 	// Find the minimum positive shift
 	type shiftOption struct {
@@ -192,12 +176,8 @@ func (s *layoutState) nudgeApart(upper, lower *layoutNode) {
 	}
 
 	if best == nil || best.amount <= 0 {
-		fmt.Printf("[NUDGE]   No valid shift found (already not stacked?)\n")
 		return // Already not stacked
 	}
-
-	fmt.Printf("[NUDGE]   Best option: %s, shift %.1f\n", best.name, best.amount)
-	fmt.Printf("[NUDGE]   Before: %s x=%.1f\n", best.node.id, best.node.x)
 
 	// Apply the shift using cascade to push neighbors if needed
 	if best.direction < 0 {
@@ -205,8 +185,6 @@ func (s *layoutState) nudgeApart(upper, lower *layoutNode) {
 	} else {
 		s.cascadeShiftRight(best.node, best.amount)
 	}
-
-	fmt.Printf("[NUDGE]   After: %s x=%.1f\n", best.node.id, best.node.x)
 }
 
 // averageNodeWidth computes the average width of non-dummy nodes.
@@ -562,8 +540,6 @@ func (s *layoutState) cascadeShiftRight(node *layoutNode, amount float64) {
 // pairs, regardless of layer distance. This catches long edges that span multiple
 // layers (with dummy nodes in between) which the adjacent-layer check misses.
 func (s *layoutState) nudgeAllStackedEdgePairs(threshold float64) {
-	fmt.Printf("[NUDGE-ALL] Checking all edge pairs for stacking (threshold=%.1f)\n", threshold)
-
 	// Track which node pairs we've already processed
 	type nodePair struct{ a, b string }
 	processed := make(map[nodePair]bool)
@@ -608,8 +584,6 @@ func (s *layoutState) nudgeAllStackedEdgePairs(threshold float64) {
 		pairs = append(pairs, realPair{origKey.from, origKey.to})
 	}
 
-	fmt.Printf("[NUDGE-ALL] Found %d real node pairs (short edges + dummy chains)\n", len(pairs))
-
 	// Process all pairs
 	for _, p := range pairs {
 		fromNode := s.nodes[p.from]
@@ -634,9 +608,6 @@ func (s *layoutState) nudgeAllStackedEdgePairs(threshold float64) {
 		toCenterX := toNode.x + toNode.width/2
 		xDiff := math.Abs(fromCenterX - toCenterX)
 
-		fmt.Printf("[NUDGE-ALL] Edge %s→%s: fromCenter=%.1f, toCenter=%.1f, diff=%.1f\n",
-			p.from, p.to, fromCenterX, toCenterX, xDiff)
-
 		if xDiff >= threshold {
 			continue // Not stacked
 		}
@@ -648,9 +619,6 @@ func (s *layoutState) nudgeAllStackedEdgePairs(threshold float64) {
 		} else {
 			upper, lower = toNode, fromNode
 		}
-
-		fmt.Printf("[NUDGE-ALL]   STACKED! upper=%s (rank %d), lower=%s (rank %d)\n",
-			upper.id, upper.rank, lower.id, lower.rank)
 
 		s.nudgeApart(upper, lower)
 	}

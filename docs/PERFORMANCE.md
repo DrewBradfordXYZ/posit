@@ -109,7 +109,7 @@ The X Network Simplex algorithm for coordinate assignment was optimized from ~90
 - `removeAuxSubtreeLeaves()`: Sort initial queue from map
 - `initLowLim()`/`postorderNodes()`: Sort neighbors before DFS traversal
 
-**Anti-stacking threshold:** Raised from 100 to 150 nodes to support CHDI-scale graphs.
+**Anti-stacking threshold:** Raised to 2000 nodes (including dummies) to support CHDI-scale graphs. A 107-table graph can have 1300+ nodes after dummy insertion for multi-layer edges.
 
 ---
 

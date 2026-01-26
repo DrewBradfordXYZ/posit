@@ -4,7 +4,7 @@ Improvements identified from code review comparing Posit's implementation agains
 
 **Quality Rating: 8.5/10** — Production-ready, competitive with Graphviz and superior to ELK/dagre in most areas.
 
-**Note:** Anti-stacking (`STACKING_PREVENTION.md`) is now COMPLETE. These performance optimizations are the next priority to enable anti-stacking on large graphs (currently limited to ≤100 nodes).
+**Note:** Anti-stacking (`STACKING_PREVENTION.md`) is now COMPLETE and enabled for graphs up to 2000 nodes (including dummies). Performance optimizations have made this practical for production use.
 
 ## Status Overview
 
@@ -300,18 +300,18 @@ Total measured improvement: **57% faster overall** (geometric mean across all be
 
 Layered graphs benefit most from the full optimization suite. X simplex sees the largest gains due to the auxiliary graph having more edges.
 
-### Current Anti-Stacking Limitation
+### Anti-Stacking Threshold
 
-Anti-stacking is currently disabled for graphs >100 nodes due to performance. The constraint:
+Anti-stacking is enabled for graphs up to 2000 nodes (including dummies):
 
 ```go
-// simplex.go line ~735
-if xs.s.opts.PreventStacking && len(xs.s.nodes) <= 100 {
+// simplex.go
+if xs.s.opts.PreventStacking && len(xs.s.nodes) <= 2000 {
     xs.addAntiStackingEdges()
 }
 ```
 
-With the optimizations now complete, this limit could potentially be raised to 200-300 nodes. Testing needed to determine the new safe threshold.
+Note: The node count includes dummy nodes inserted for multi-layer edges. A 107-table graph can have 1300+ total nodes after dummy insertion, so the threshold must be high enough to accommodate this overhead.
 
 ---
 

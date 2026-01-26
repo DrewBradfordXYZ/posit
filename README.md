@@ -22,6 +22,7 @@ Posit computes X/Y positions for nodes in a directed graph, arranging them in hi
 - Self-loop support
 - Disconnected component packing
 - Multi-edge support
+- Cross-layer anti-stacking (prevents vertical node overlap)
 
 ## Installation
 

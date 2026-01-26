@@ -946,6 +946,77 @@ func (g *Graph) RouteFromPositions(positions map[string]Position, opts ...Option
 	return state.buildLayout()
 }
 
+// RouteEdgesForNode routes only edges connected to a specific node.
+// Use this when a single node has been moved and you need to update only the
+// affected edges, not the entire graph. This is O(connected_edges) instead of
+// O(all_edges), providing significant speedup for large graphs.
+//
+// Returns a partial Layout containing only the affected edges (and all nodes
+// for position reference). Edges not connected to the specified node are not
+// included in the result.
+//
+// The nodeID must exist in the graph. Positions are in user coordinate space.
+func (g *Graph) RouteEdgesForNode(nodeID string, positions map[string]Position, opts ...Options) *Layout {
+	opt := DefaultOptions()
+	if len(opts) > 0 {
+		opt = opts[0]
+	}
+
+	state := newLayoutState(g, opt)
+
+	// Set node positions from user-provided coordinates
+	for id, pos := range positions {
+		if node, ok := state.nodes[id]; ok {
+			node.x = pos.X
+			node.y = pos.Y
+		}
+	}
+
+	// Compute port sides from node positions
+	state.computePortOffsets()
+
+	// Filter edges to only those connected to the target node
+	affectedEdges := make(map[edgeKey]*layoutEdge)
+	affectedSelfLoops := make([]*layoutEdge, 0)
+
+	for key, edge := range state.edges {
+		if key.from == nodeID || key.to == nodeID {
+			affectedEdges[key] = edge
+		}
+	}
+
+	for _, edge := range state.selfLoops {
+		if edge.key.from == nodeID {
+			affectedSelfLoops = append(affectedSelfLoops, edge)
+		}
+	}
+
+	// Temporarily replace full edge set with filtered set
+	originalEdges := state.edges
+	originalSelfLoops := state.selfLoops
+	state.edges = affectedEdges
+	state.selfLoops = affectedSelfLoops
+
+	// Route only the affected edges
+	state.inferEdgeSides()
+	if opt.RouteStyle == RouteOrthogonal {
+		state.routeOrthogonal()
+	} else {
+		state.addNodeIntersections()
+	}
+	state.offsetParallelEdges()
+	state.restoreSelfLoops()
+
+	// Build partial layout with only affected edges
+	layout := state.buildLayout()
+
+	// Restore original edge set for cleanup
+	state.edges = originalEdges
+	state.selfLoops = originalSelfLoops
+
+	return layout
+}
+
 // adjustClusters sizes cluster nodes to contain their children.
 func (g *Graph) adjustClusters(layout *Layout) {
 	if len(g.clusters) == 0 {

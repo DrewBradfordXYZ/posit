@@ -583,3 +583,83 @@ func TestRouteFromPositions_SideFlipsOnMove(t *testing.T) {
 		t.Errorf("With B to left, source should exit Left, got %v", edge2.SourceSide)
 	}
 }
+
+func TestRouteEdgesForNode_OnlyAffectedEdges(t *testing.T) {
+	// Create a graph with multiple nodes and edges
+	// A -> B, A -> C, B -> C, C -> D
+	// When we move node B, only edges A->B and B->C should be in the result
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
+	g.AddNode("C", NodeOptions{Width: 100, Height: 50})
+	g.AddNode("D", NodeOptions{Width: 100, Height: 50})
+	g.MustAddEdge("A", "B", EdgeOptions{})
+	g.MustAddEdge("A", "C", EdgeOptions{})
+	g.MustAddEdge("B", "C", EdgeOptions{})
+	g.MustAddEdge("C", "D", EdgeOptions{})
+
+	positions := map[string]Position{
+		"A": {X: 0, Y: 0},
+		"B": {X: 200, Y: 0},
+		"C": {X: 100, Y: 100},
+		"D": {X: 100, Y: 200},
+	}
+
+	// Route only edges connected to B
+	layout := g.RouteEdgesForNode("B", positions)
+
+	// Should have edges A->B and B->C
+	if _, ok := layout.Edges["A->B"]; !ok {
+		t.Error("Expected edge A->B in result")
+	}
+	if _, ok := layout.Edges["B->C"]; !ok {
+		t.Error("Expected edge B->C in result")
+	}
+
+	// Should NOT have edges A->C or C->D (not connected to B)
+	if _, ok := layout.Edges["A->C"]; ok {
+		t.Error("Edge A->C should not be in result (not connected to B)")
+	}
+	if _, ok := layout.Edges["C->D"]; ok {
+		t.Error("Edge C->D should not be in result (not connected to B)")
+	}
+
+	// Verify edge count
+	if len(layout.Edges) != 2 {
+		t.Errorf("Expected 2 edges, got %d", len(layout.Edges))
+	}
+}
+
+func TestRouteEdgesForNode_SelfLoop(t *testing.T) {
+	// Test that self-loops are included when routing for their node
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{
+		Width:  100,
+		Height: 100,
+		Ports: []PortOptions{
+			{ID: "p1", Offset: 30, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+			{ID: "p2", Offset: 70, Constraint: PortFixedOffset, Axis: PortAxisHorizontal},
+		},
+	})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
+	g.MustAddEdge("A", "A", EdgeOptions{SourcePort: "p1", TargetPort: "p2"}) // self-loop
+	g.MustAddEdge("A", "B", EdgeOptions{})
+
+	positions := map[string]Position{
+		"A": {X: 0, Y: 0},
+		"B": {X: 200, Y: 0},
+	}
+
+	layout := g.RouteEdgesForNode("A", positions)
+
+	// Should have both the self-loop and A->B
+	if _, ok := layout.Edges["A->A"]; !ok {
+		t.Error("Expected self-loop A->A in result")
+	}
+	if _, ok := layout.Edges["A->B"]; !ok {
+		t.Error("Expected edge A->B in result")
+	}
+	if len(layout.Edges) != 2 {
+		t.Errorf("Expected 2 edges, got %d", len(layout.Edges))
+	}
+}

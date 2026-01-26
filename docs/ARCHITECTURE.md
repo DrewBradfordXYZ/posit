@@ -114,152 +114,256 @@ These targets assume typical database schemas where most nodes have 2-5 edges.
 
 ```
 posit/
-├── posit.go          # Public API: Graph, Layout, Options, types
-├── state.go          # Internal layoutState orchestrator
-├── acyclic.go        # Phase 1: Cycle removal via DFS
-├── rank.go           # Phase 2: Layer assignment (longest-path, network-simplex)
+├── posit.go          # Public API: Graph, Layout, Options, types, constants
+├── state.go          # Internal layoutState struct and edge/node tracking
+├── acyclic.go        # Phase 1: Cycle removal dispatcher (DFS/Greedy)
+├── greedy_fas.go     # Phase 1: Greedy feedback arc set algorithm
+├── rank.go           # Phase 2: Layer assignment dispatcher and constraints
+├── simplex.go        # Phase 2: Network simplex algorithm for ranking
 ├── normalize.go      # Phase 3: Dummy node insertion for long edges
 ├── order.go          # Phase 4: Crossing minimization (barycenter heuristic)
-├── position.go       # Phase 5: X/Y coordinate assignment (Brandes-Kopf)
-├── route.go          # Phase 6: Edge routing and cleanup
-├── util.go           # Shared helpers (adjacency, iteration, math)
-└── posit_test.go     # Comprehensive test suite
+├── position.go       # Phase 5: X/Y coordinate assignment (Brandes-Kopf, Network Simplex)
+├── boundary.go       # Phase 5: Node boundary intersection geometry
+├── overlap.go        # Phase 5: Cross-layer overlap resolution
+├── port.go           # Phase 5: Port offset computation and assignment
+├── route.go          # Phase 6: Edge routing, self-loops, label collisions
+├── components.go     # Component detection and packing
+└── direction.go      # Layout direction transforms (LR, RL, BT, TB)
 ```
 
 ### File Responsibilities
 
-| File | Lines (est.) | Purpose |
-|------|--------------|---------|
-| `posit.go` | ~150 | Public types, Graph builder, Layout entry point |
-| `state.go` | ~100 | `layoutState` struct, phase orchestration |
-| `acyclic.go` | ~80 | DFS-based cycle detection, edge reversal |
-| `rank.go` | ~200 | Longest-path and network-simplex ranking |
-| `normalize.go` | ~100 | Dummy node insertion/removal for multi-layer edges |
-| `order.go` | ~250 | Layer sweeps, barycenter calculation, crossing count |
-| `position.go` | ~300 | Brandes-Kopf algorithm for X coordinates, Y stacking |
-| `route.go` | ~100 | Edge path construction, reversed edge restoration |
-| `util.go` | ~100 | Adjacency helpers, topological sort, min/max |
+| File | Lines | Purpose |
+|------|------:|---------:|
+| `posit.go` | 990 | Public types (Graph, Layout, Options), builder methods, entry point |
+| `state.go` | 276 | `layoutState` struct, `edgeKey`, `layoutNode` with phase outputs |
+| `acyclic.go` | 134 | DFS-based cycle detection, edge reversal, self-loop handling |
+| `greedy_fas.go` | 172 | Eades/Lin/Smyth greedy heuristic for feedback arc set minimization |
+| `rank.go` | 292 | Ranking dispatch, rank constraints (RankGroup, RankMin/Max), cluster ranks |
+| `simplex.go` | 2,082 | Network simplex algorithm: spanning tree, cut values, pivoting |
+| `normalize.go` | 171 | Dummy node insertion/removal for multi-layer edge splitting |
+| `order.go` | 1,235 | Layer sweeps, barycenter/median calculation, crossing count, cluster adjacency |
+| `position.go` | 591 | Brandes-Kopf algorithm, Y stacking, network simplex X placement |
+| `boundary.go` | 433 | `Rect` type, line-rectangle intersection, edge attachment geometry |
+| `overlap.go` | 264 | Cross-layer node overlap detection and resolution |
+| `port.go` | 192 | Port constraint modes (FixedPos, FixedSide, FixedOrder, Free), offset computation |
+| `route.go` | 1,174 | Edge path construction, orthogonal routing, self-loops, label collision resolution |
+| `components.go` | 153 | Disconnected component detection via union-find, bounding box packing |
+| `direction.go` | 142 | Coordinate transforms for TopToBottom, LeftToRight, BottomToTop, RightToLeft |
 
-**Total: ~1,400 lines**
+**Total: ~8,300 lines** (excluding tests)
 
 ---
 
 ## Data Flow
 
-The algorithm transforms data through six phases, with each phase building on the previous:
+The algorithm transforms data through ten phases, with pre- and post-processing for direction handling and compound graphs:
 
 ```
-┌─────────────────┐
-│   Input Graph   │  User-provided nodes and edges
-│   (posit.Graph) │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  layoutState    │  Internal representation with adjacency lists
-│  initialization │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Phase 1: Acyclic│  Remove cycles by reversing back-edges
-│                 │  Enables topological processing
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Phase 2: Rank   │  Assign each node to a layer (integer rank)
-│                 │  Output: node.rank for all nodes
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Phase 3: Norm.  │  Insert dummy nodes for edges spanning 2+ layers
-│                 │  All edges now span exactly 1 layer
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Phase 4: Order  │  Minimize edge crossings within layers
-│                 │  Output: node.order (position within layer)
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Phase 5: Pos.   │  Assign X/Y coordinates
-│                 │  Output: node.x, node.y for all nodes
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Phase 6: Route  │  Build edge paths through dummy nodes
-│                 │  Restore reversed edges, cleanup
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Output Layout  │  Final positions for rendering
-│  (posit.Layout) │
-└─────────────────┘
+┌─────────────────────┐
+│    Input Graph      │  User-provided nodes and edges
+│    (posit.Graph)    │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│   layoutState       │  Internal representation with adjacency lists
+│   initialization    │  newLayoutState()
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│  Pre-transform      │  adjustForDirection()
+│  Direction Setup    │  Swap W/H for LR/RL layouts
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ Phase 1: Acyclic    │  makeAcyclic()
+│                     │  Remove cycles, extract self-loops
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ Phase 2: Rank       │  assignLayers()
+│                     │  Assign node.rank, apply constraints
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ Phase 3: Normalize  │  addDummyNodes(), markInteriorDummies()
+│                     │  Split long edges with dummy nodes
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ Phase 4: Order      │  minimizeCrossings()
+│                     │  Minimize crossings, cluster adjacency
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ Phase 5: Position   │  assignCoordinates()
+│                     │  Compute X/Y for all nodes
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ Phase 6: Overlap    │  resolveCrossLayerOverlaps()
+│  Resolution         │  Fix node overlaps across layers
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ Phase 7: Ports      │  computePortOffsets()
+│                     │  Compute auto port positions
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ Phase 8: Components │  packComponents()
+│                     │  Arrange disconnected subgraphs
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ Phase 9: Route      │  routeEdges()
+│                     │  Build edge paths, restore reversals
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│  Post-transform     │  undoDirectionAdjustment()
+│  Direction Finalize │  Convert to user coordinate space
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│  Cluster Sizing     │  adjustClusters()
+│                     │  Size compound nodes to contain children
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│   Output Layout     │  Final positions for rendering
+│   (posit.Layout)    │
+└─────────────────────┘
 ```
 
 ### Phase Details
 
+#### Pre-transform: Direction Setup
+
+**File**: `direction.go` | **Method**: `adjustForDirection()`
+
+Prepares the graph for layout in non-default directions. For `LeftToRight` and `RightToLeft` layouts, swaps node width and height so the core algorithm (which always works top-to-bottom internally) produces correct results.
+
+```go
+// For LR/RL directions, the layout treats the "rank" axis as horizontal
+// by swapping dimensions before processing
+node.width, node.height = node.height, node.width
+```
+
 #### Phase 1: Make Acyclic
 
-**Input**: Directed graph (may contain cycles)
+**File**: `acyclic.go` | **Method**: `makeAcyclic()`
+
+**Input**: Directed graph (may contain cycles and self-loops)
 **Output**: Directed acyclic graph (DAG)
 
-Uses depth-first search to identify back-edges (edges that point to an ancestor in the DFS tree). These edges are "reversed" by marking them and swapping their direction. The reversal is undone in Phase 6.
+Two algorithms available:
+
+1. **DFS Acyclicer** (default): Uses depth-first search to identify back-edges (edges pointing to ancestors in the DFS tree). These edges are reversed by swapping direction and marking for later restoration.
+
+2. **Greedy Acyclicer**: Uses the Eades/Lin/Smyth heuristic for weighted feedback arc sets. Produces better results for graphs with edge weights where minimizing reversed edge weight matters.
+
+Self-loops (edges where source equals target) are extracted and stored separately for curved path rendering in Phase 9.
 
 ```
-Before:  A → B → C → A (cycle)
-After:   A → B → C ← A (reversed edge marked)
+Before:  A -> B -> C -> A (cycle), D -> D (self-loop)
+After:   A -> B -> C <- A (reversed), self-loops tracked separately
 ```
 
 #### Phase 2: Assign Layers (Ranking)
 
+**File**: `rank.go`, `simplex.go` | **Method**: `assignLayers()`
+
 **Input**: DAG
 **Output**: Each node has a `rank` (layer number, 0-indexed)
 
-Two algorithms available:
+Three ranking algorithms available:
 
-1. **Longest Path** (default): Simple BFS from sources. Fast but may create more layers than necessary.
+1. **Longest Path** (default): Works backwards from sink nodes, assigning each node the minimum rank that satisfies edge constraints. Fast O(V+E) but may create more layers than necessary.
 
-2. **Network Simplex**: Optimal layer assignment minimizing total edge length. More complex but produces tighter layouts.
+2. **Tight Tree**: Uses longest-path as initial solution, then builds a feasible spanning tree to tighten edge lengths. Middle ground between speed and compactness.
+
+3. **Network Simplex**: Optimal layer assignment minimizing total edge length. Uses the simplex algorithm on the graph's spanning tree to iteratively improve ranks. Most compact results but slower for large graphs.
+
+After initial ranking, several post-processing steps apply:
+
+- **RankGroup constraints**: Moves group members to the minimum rank among them
+- **RankMin/RankMax constraints**: Pins nodes to first or last layer
+- **Cluster rank constraints**: Ensures cluster children occupy consecutive ranks
+- **Rank normalization**: Shifts all ranks so minimum is 0
 
 ```
-Rank 0:  [A]
-Rank 1:  [B, C]
-Rank 2:  [D]
+Rank 0:  [A]           <- RankMin nodes forced here
+Rank 1:  [B, C]        <- Grouped nodes share same rank
+Rank 2:  [D, E]
+Rank 3:  [F]           <- RankMax nodes forced here
 ```
 
 #### Phase 3: Normalize (Dummy Nodes)
 
+**File**: `normalize.go` | **Methods**: `addDummyNodes()`, `markInteriorDummies()`
+
 **Input**: DAG with ranks
 **Output**: DAG where all edges span exactly 1 layer
 
-Long edges (spanning multiple layers) are split by inserting "dummy" nodes:
+Long edges (spanning multiple layers) are split by inserting "dummy" nodes. This ensures every edge connects adjacent layers, which is required for crossing minimization and coordinate assignment.
 
 ```
-Before:  A (rank 0) ────────→ D (rank 2)
+Before:  A (rank 0) ────────────────→ D (rank 3)
 
-After:   A (rank 0) → dummy (rank 1) → D (rank 2)
+After:   A (rank 0) → _dummy_1 (rank 1) → _dummy_2 (rank 2) → D (rank 3)
 ```
 
-Dummy nodes have zero width/height and exist only to provide anchor points for edge routing.
+For edges with labels, a "label dummy" is created at the appropriate position (center, near source, or near target) with dimensions matching the label size. This reserves space for the label in crossing minimization and coordinate assignment.
+
+After dummy insertion, `markInteriorDummies()` identifies dummy nodes whose both neighbors are also dummies. These "interior dummies" can skip adjacent exchange optimization since their position is fully determined by their single incoming and outgoing edges.
 
 #### Phase 4: Minimize Crossings (Ordering)
+
+**File**: `order.go` | **Method**: `minimizeCrossings()`
 
 **Input**: Layered graph with dummy nodes
 **Output**: Each node has an `order` (position within its layer)
 
-Uses the barycenter heuristic with layer sweeps:
+Uses a multi-pass approach combining several techniques:
 
-1. Start with initial ordering (e.g., by DFS discovery)
-2. Sweep down: For each layer, position nodes at the barycenter (average) of their predecessors
-3. Sweep up: Position nodes at the barycenter of their successors
-4. Repeat until crossings stop decreasing (typically 4-8 iterations)
+1. **Barycenter Heuristic with Layer Sweeps**:
+   - Sweep down: Position each node at the barycenter (weighted average) of its predecessors
+   - Sweep up: Position each node at the barycenter of its successors
+   - Repeat up to 24 iterations, stopping when no improvement for 4 consecutive passes
+
+2. **Adjacent Exchange**:
+   - After each sweep, attempt local improvements by swapping adjacent node pairs
+   - Uses efficient O(degree^2) incremental crossing count (not O(E^2) full recount)
+   - Includes stochastic perturbation to escape local minima
+
+3. **Order Constraints**:
+   - OrderGroup: Groups nodes to be placed adjacently within their layer
+   - OrderPriority: Controls ordering within an OrderGroup
+
+4. **Optional Reverse Ordering**:
+   - When `TryReverseOrdering` is enabled, runs minimization in both layer directions
+   - Keeps the result with fewer crossings (roughly doubles ordering time)
+
+5. **Cluster Adjacency**:
+   - `enforceClusterAdjacency()` ensures children of each cluster are adjacent within layers
+
+6. **Port-Level Crossing Minimization**:
+   - `minimizePortCrossings()` pre-assigns sides for PortFree ports and computes optimal ordering for ports on each side
 
 ```
 Before (4 crossings):     After (0 crossings):
@@ -272,28 +376,167 @@ Layer 1:  C   D           Layer 1:  C   D
 
 #### Phase 5: Assign Coordinates
 
+**File**: `position.go`, `simplex.go` | **Method**: `assignCoordinates()`
+
 **Input**: Ordered layers
 **Output**: X/Y coordinates for each node
 
-**Y coordinates**: Simple stacking with `rankSep` spacing between layers.
+**Y coordinates**: `assignYCoordinates()` stacks layers with `RankSep` spacing. Each layer's Y is the previous layer's bottom plus the configured separation.
 
-**X coordinates**: Uses the Brandes-Kopf algorithm which:
+**X coordinates**: Three algorithms available based on `XCoordAlgorithm` option:
 
-1. Identifies "type 1" conflicts (inner segments that would cause edge crossings)
-2. Performs four passes (up-left, up-right, down-left, down-right)
-3. Computes median of the four placements for each node
+1. **Brandes-Kopf** (default for small graphs, < BKThreshold nodes):
+   - Identifies "type 1" conflicts (inner segments that would cause crossings)
+   - Performs four alignment passes: up-left, up-right, down-left, down-right
+   - Each pass aligns nodes vertically with their "median" neighbor
+   - Final position is the median of the four pass results
+   - Produces compact, balanced layouts with straight vertical edges where possible
 
-This produces compact, balanced layouts with straight vertical edge segments where possible.
+2. **Simple Centering** (default for large graphs, >= BKThreshold nodes):
+   - Places nodes left-to-right within each layer with `NodeSep` spacing
+   - Centers all layers relative to the widest layer
+   - Fast but less optimal alignment
 
-#### Phase 6: Route Edges
+3. **Network Simplex** (when `XCoordAlgorithm: XNetworkSimplex`):
+   - Builds auxiliary graph with separation constraints as edges
+   - Runs network simplex to find globally optimal X positions
+   - Supports `PreventStacking` option to add cross-layer separation constraints
+   - Produces the most balanced results but slower for large graphs
 
-**Input**: Positioned nodes (including dummies)
-**Output**: Edge paths as arrays of points
+#### Phase 6: Cross-Layer Overlap Resolution
 
-1. Collect coordinates from dummy nodes to form edge polylines
-2. Remove dummy nodes from output
-3. Restore reversed edges (swap source/target, reverse point order)
-4. Optionally apply edge bundling or smoothing
+**File**: `overlap.go` | **Method**: `resolveCrossLayerOverlaps()`
+
+**Input**: Positioned nodes
+**Output**: Adjusted positions with no cross-layer node overlaps
+
+When `NodeNodeBetweenLayers` option is set (default: 0, disabled), this phase ensures minimum spacing between node boundaries in adjacent layers. This prevents tall nodes from visually overlapping nodes in the next layer.
+
+Resolution strategies (in order of preference):
+
+1. **Horizontal Shift**: Move the node with fewer connections horizontally to eliminate X-range overlap
+2. **Layer Gap Increase**: If horizontal shift fails, increase the gap between the two layers
+
+Skips node pairs that have a direct edge between them (edge routing handles their visual connection).
+
+Iterates until stable or maximum 10 iterations (handles cascading shifts).
+
+#### Phase 7: Port Position Computation
+
+**File**: `port.go` | **Method**: `computePortOffsets()`
+
+**Input**: Positioned nodes with port declarations
+**Output**: Computed offsets (and sides for PortFree) written to node.ports
+
+For ports with computed positions (PortFixedSide, PortFixedOrder, PortFree, PortFixedOffset):
+
+1. **Side Assignment** (PortFree, PortFixedOffset):
+   - Uses geometric line-rectangle intersection voting
+   - Examines all connected nodes to determine the best side for the port
+   - Respects PortAxis constraints (horizontal-only, vertical-only, or any)
+
+2. **Offset Computation**:
+   - Groups ports by side
+   - For PortFixedOrder: sorts by declared Order value
+   - For PortFixedSide/PortFree: sorts by barycenter of connected nodes along the side
+   - Distributes ports evenly along the side length
+   - PortFixedOffset ports keep their declared offset
+
+#### Phase 8: Component Packing
+
+**File**: `components.go` | **Method**: `packComponents()`
+
+**Input**: Positioned nodes (may include disconnected subgraphs)
+**Output**: Components arranged according to packing options
+
+For graphs with multiple disconnected components, this phase arranges them according to `ComponentPacking` option:
+
+1. **PackHorizontal** (default): Places components side by side, aligned to top edge
+2. **PackVertical**: Stacks components vertically, aligned to left edge
+
+Components are identified using BFS traversal through all edges (including through dummy nodes). The gap between components is controlled by `ComponentGap` (default: `NodeSep * 2`).
+
+```
+PackHorizontal:                PackVertical:
+┌─────┐  ┌─────┐              ┌─────┐
+│ C1  │  │ C2  │              │ C1  │
+└─────┘  └─────┘              └─────┘
+                              ┌─────┐
+                              │ C2  │
+                              └─────┘
+```
+
+#### Phase 9: Edge Routing
+
+**File**: `route.go` | **Method**: `routeEdges()`
+
+**Input**: Positioned nodes (including dummies), reversed edges, self-loops
+**Output**: Edge paths as arrays of points, attachment sides, label positions
+
+This phase builds the final edge paths through eight sub-steps:
+
+1. **Build Dummy Chain Paths** (`buildEdgePaths()`):
+   - Walks each dummy chain to collect bend points
+   - Computes label positions from label dummy coordinates
+   - Parallelizes for graphs with 50+ chains
+
+2. **Initialize Short Edges** (`initializeShortEdges()`):
+   - Creates straight paths for edges without dummy nodes
+
+3. **Restore Reversed Edges** (`restoreReversedEdges()`):
+   - Swaps source/target for edges reversed in Phase 1
+   - Reverses point arrays so paths flow correctly
+
+4. **Route by Style**:
+   - **RoutePolyline** (default): Adds node boundary intersection points (`addNodeIntersections()`)
+   - **RouteOrthogonal**: Creates channel-routed horizontal/vertical segments (`routeOrthogonal()`)
+
+5. **Offset Parallel Edges** (`offsetParallelEdges()`):
+   - Separates multi-edges between the same node pair
+   - Uses `ChannelGap` spacing
+
+6. **Infer Attachment Sides** (`inferEdgeSides()`):
+   - Computes `SourceSide` and `TargetSide` for each edge
+   - Considers port constraints, stacked nodes, and relative positions
+
+7. **Resolve Label Collisions** (`resolveEdgeLabelCollisions()`):
+   - Shifts overlapping edge labels apart
+
+8. **Restore Self-Loops** (`restoreSelfLoops()`):
+   - Creates curved arc paths for self-loop edges
+   - Positions arcs on the appropriate side based on port constraints
+
+#### Post-transform: Direction Finalize
+
+**File**: `direction.go` | **Method**: `undoDirectionAdjustment()`
+
+Converts coordinates from internal layout space to user coordinate space:
+
+| Direction | Transformation |
+|-----------|----------------|
+| TopToBottom | No change (internal = user space) |
+| BottomToTop | Flip Y coordinates, swap Top/Bottom sides |
+| LeftToRight | Swap X/Y coordinates, swap Width/Height, rotate sides |
+| RightToLeft | Flip Y, swap X/Y, swap Width/Height, rotate sides |
+
+#### Final: Cluster Sizing
+
+**File**: `posit.go` | **Method**: `adjustClusters()`
+
+For compound graphs with cluster nodes (`IsCluster: true`), sizes each cluster to contain all its children with the configured padding:
+
+1. Finds bounding box of all child nodes
+2. Sets cluster position and size to contain children with padding on all sides
+3. Handles nested clusters (may require multiple passes)
+
+```
+┌────────────────────┐
+│ Cluster (padding)  │
+│  ┌────┐   ┌────┐   │
+│  │ A  │   │ B  │   │
+│  └────┘   └────┘   │
+└────────────────────┘
+```
 
 ---
 

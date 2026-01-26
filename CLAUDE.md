@@ -16,23 +16,45 @@ These tests enforce the contract across 11 graph topologies. If they fail, the c
 
 ## Key Files
 
+### Public API
 - `posit.go` — Public API: Graph, Options, Layout types
 - `CONTRACT.md` — Output invariants (what consumers can rely on)
-- `contract_test.go` — Property tests enforcing the contract
-- `state.go` — Internal layout pipeline and `buildLayout()` (where output is constructed)
-- `order.go` — Crossing minimization
-- `rank.go` — Layer assignment
+
+### Pipeline Phases (in execution order)
+- `acyclic.go` — Cycle detection and edge reversal
+- `greedy_fas.go` — Greedy FAS algorithm for cycle removal (Eades-Lin-Smyth 1993)
+- `rank.go` — Layer assignment (longest path)
 - `simplex.go` — Network Simplex for Y ranking and X coordinates (Gansner et al. 1993)
+- `normalize.go` — Dummy node insertion for long edges
+- `order.go` — Crossing minimization (barycenter/median heuristics)
 - `position.go` — Coordinate assignment (Brandes-Köpf default, or X simplex)
 - `overlap.go` — Cross-layer overlap resolution
-- `route.go` — Edge routing
 - `port.go` — Port offset computation
+- `route.go` — Edge routing and spline generation
+
+### Supporting
+- `state.go` — Internal layout pipeline and `buildLayout()` (where output is constructed)
+- `boundary.go` — Boundary node handling
+- `components.go` — Disconnected component layout
+- `direction.go` — Layout direction (TB, BT, LR, RL)
+
+### Tests
+- `contract_test.go` — Property tests enforcing the contract
+- `stress_test.go` — Large graph stress tests
+- `*_test.go` — Unit tests for each module
+
+## Documentation
+
+- `docs/ARCHITECTURE.md` — Detailed architecture and design decisions
+- `literature/` — Algorithm references (Sugiyama, Network Simplex, Brandes-Köpf, etc.)
+- `_refs/` — Reference implementations (ELK, MSAGL, dagre)
 
 ## Testing
 
 ```bash
 go test -short ./...          # Full suite (skips stress tests)
 go test -run TestContract -v  # Contract invariants only
+go test -run TestStress -v    # Stress tests only
 go test -bench=. -count=5     # Performance (use benchstat to compare)
 ```
 

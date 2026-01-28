@@ -4,20 +4,15 @@
 
 ## Overview
 
-### Why Posit Exists
+### Server-Side Layout
 
-The Go ecosystem lacks a native, dependency-free solution for hierarchical graph layout. While JavaScript has dagre and Python has graphviz bindings, Go developers often resort to:
+Posit is designed for server-side layout, where the server owns application state and pushes UI updates to clients.
 
-- Shelling out to external tools (graphviz)
-- Using CGO bindings with native dependencies
-- Implementing ad-hoc layouts that don't handle edge crossings
+Layout is computed once on the server and shared to all clients. This enables multiplayer (all clients see the same layout) and smaller browser bundles (no layout library shipped to the client).
 
-Posit fills this gap with a pure Go implementation that:
+The application provides node dimensions and layout constraints to posit, shifting computation to the server and improving client performance.
 
-- Requires **zero external dependencies**
-- Compiles to a single binary with no runtime requirements
-- Performs well for graphs up to 200+ nodes
-- Produces publication-quality hierarchical layouts
+Clients are intended to show confirmed state from the server, displaying optimistic updates with pending styles.
 
 ### General-Purpose Design
 
@@ -32,21 +27,14 @@ Posit is designed as a **general-purpose graph layout library**, suitable for an
 
 The library prioritizes **sound algorithms and good theory** over narrow optimizations. Features that benefit the general case are preferred; project-specific tweaks can be layered on top by consumers.
 
-### Design Influences
+### Algorithms
 
-The following projects provided real-world requirements that shaped posit's design:
+Posit implements the Sugiyama framework for layered graph drawing:
 
-| Project | Influence |
-|---------|-----------|
-| **dagre** (JS) | Reference implementation; algorithm structure and phase organization |
-| **React Flow / xyflow** | Coordinate conventions (top-left origin), API patterns |
-| **ELK** | Algorithm options (network-simplex placement), spacing defaults |
-
-These influences are documented to provide context, not to limit scope. Posit aims to be useful **beyond** these specific use cases.
-
-### The Sugiyama Algorithm
-
-The Sugiyama algorithm (also called the "layered graph drawing" algorithm) is the standard approach for drawing hierarchical directed graphs. It was introduced by Kozo Sugiyama in 1981 and consists of several distinct phases that transform an arbitrary directed graph into a readable hierarchical layout.
+- **Greedy FAS (Eades-Lin-Smyth)** - cycle removal
+- **Network simplex** - ranking (Y) and X-coordinate positioning
+- **Barycenter heuristic** - crossing minimization
+- **Brandes-Köpf** - coordinate assignment
 
 ---
 

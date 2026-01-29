@@ -507,3 +507,139 @@ func TestAssignPortSideFromBoundary_TargetPort(t *testing.T) {
 		t.Errorf("expected Left (source B is to the left), got %v", side)
 	}
 }
+
+// =============================================================================
+// InferSideFromGapThreshold tests
+// =============================================================================
+
+func TestInferSideFromGapThreshold_WellSeparatedRightward(t *testing.T) {
+	// Target is well to the right of source (gap > threshold)
+	// Expected: right→left (opposing sides)
+	from := &layoutNode{x: 0, y: 0, width: 100, height: 50}
+	to := &layoutNode{x: 300, y: 0, width: 100, height: 50} // gap = 200
+
+	srcSide, tgtSide := InferSideFromGapThreshold(from, to, 120)
+
+	if srcSide != Right {
+		t.Errorf("source: expected Right, got %v", srcSide)
+	}
+	if tgtSide != Left {
+		t.Errorf("target: expected Left, got %v", tgtSide)
+	}
+}
+
+func TestInferSideFromGapThreshold_WellSeparatedLeftward(t *testing.T) {
+	// Target is well to the left of source (gap > threshold)
+	// Expected: left→right (opposing sides)
+	from := &layoutNode{x: 300, y: 0, width: 100, height: 50}
+	to := &layoutNode{x: 0, y: 0, width: 100, height: 50} // gap = 200
+
+	srcSide, tgtSide := InferSideFromGapThreshold(from, to, 120)
+
+	if srcSide != Left {
+		t.Errorf("source: expected Left, got %v", srcSide)
+	}
+	if tgtSide != Right {
+		t.Errorf("target: expected Right, got %v", tgtSide)
+	}
+}
+
+func TestInferSideFromGapThreshold_SmallGapRightward(t *testing.T) {
+	// Target is to the right with small gap (gap < threshold)
+	// Expected: right→right (same side)
+	from := &layoutNode{x: 0, y: 0, width: 100, height: 50}
+	to := &layoutNode{x: 150, y: 50, width: 100, height: 50} // gap = 50
+
+	srcSide, tgtSide := InferSideFromGapThreshold(from, to, 120)
+
+	if srcSide != Right {
+		t.Errorf("source: expected Right, got %v", srcSide)
+	}
+	if tgtSide != Right {
+		t.Errorf("target: expected Right (same-side), got %v", tgtSide)
+	}
+}
+
+func TestInferSideFromGapThreshold_SmallGapLeftward(t *testing.T) {
+	// Target is to the left with small gap (gap < threshold)
+	// Expected: left→left (same side)
+	from := &layoutNode{x: 150, y: 0, width: 100, height: 50}
+	to := &layoutNode{x: 0, y: 50, width: 100, height: 50} // gap = 50
+
+	srcSide, tgtSide := InferSideFromGapThreshold(from, to, 120)
+
+	if srcSide != Left {
+		t.Errorf("source: expected Left, got %v", srcSide)
+	}
+	if tgtSide != Left {
+		t.Errorf("target: expected Left (same-side), got %v", tgtSide)
+	}
+}
+
+func TestInferSideFromGapThreshold_OverlappingRightward(t *testing.T) {
+	// Nodes overlap horizontally, target center is to the right
+	// Expected: right→right (same side)
+	from := &layoutNode{x: 0, y: 0, width: 100, height: 50}
+	to := &layoutNode{x: 50, y: 100, width: 100, height: 50} // overlapping
+
+	srcSide, tgtSide := InferSideFromGapThreshold(from, to, 120)
+
+	if srcSide != Right {
+		t.Errorf("source: expected Right, got %v", srcSide)
+	}
+	if tgtSide != Right {
+		t.Errorf("target: expected Right (same-side for overlap), got %v", tgtSide)
+	}
+}
+
+func TestInferSideFromGapThreshold_OverlappingLeftward(t *testing.T) {
+	// Nodes overlap horizontally, target center is to the left
+	// Expected: left→left (same side)
+	from := &layoutNode{x: 50, y: 0, width: 100, height: 50}
+	to := &layoutNode{x: 0, y: 100, width: 100, height: 50} // overlapping
+
+	srcSide, tgtSide := InferSideFromGapThreshold(from, to, 120)
+
+	if srcSide != Left {
+		t.Errorf("source: expected Left, got %v", srcSide)
+	}
+	if tgtSide != Left {
+		t.Errorf("target: expected Left (same-side for overlap), got %v", tgtSide)
+	}
+}
+
+// =============================================================================
+// ComputeOptimalSides (public API) tests
+// =============================================================================
+
+func TestComputeOptimalSides_WellSeparated(t *testing.T) {
+	srcSide, tgtSide := ComputeOptimalSides(0, 0, 100, 50, 300, 0, 100, 50, 0)
+
+	if srcSide != Right || tgtSide != Left {
+		t.Errorf("expected Right→Left, got %v→%v", srcSide, tgtSide)
+	}
+}
+
+func TestComputeOptimalSides_SmallGap(t *testing.T) {
+	srcSide, tgtSide := ComputeOptimalSides(0, 0, 100, 50, 150, 50, 100, 50, 0)
+
+	if srcSide != Right || tgtSide != Right {
+		t.Errorf("expected Right→Right (same-side), got %v→%v", srcSide, tgtSide)
+	}
+}
+
+func TestComputeOptimalSides_CustomThreshold(t *testing.T) {
+	// With threshold of 50, a gap of 100 should use opposing sides
+	srcSide, tgtSide := ComputeOptimalSides(0, 0, 100, 50, 200, 0, 100, 50, 50)
+
+	if srcSide != Right || tgtSide != Left {
+		t.Errorf("expected Right→Left with threshold=50, got %v→%v", srcSide, tgtSide)
+	}
+
+	// With threshold of 150, same gap should use same sides
+	srcSide2, tgtSide2 := ComputeOptimalSides(0, 0, 100, 50, 200, 0, 100, 50, 150)
+
+	if srcSide2 != Right || tgtSide2 != Right {
+		t.Errorf("expected Right→Right with threshold=150, got %v→%v", srcSide2, tgtSide2)
+	}
+}

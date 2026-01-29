@@ -285,6 +285,40 @@ const (
 	Right
 )
 
+// ComputeOptimalSides determines the best attachment sides for an edge between
+// two nodes using horizontal gap analysis. This function is designed for
+// interactive scenarios where nodes may overlap or have small horizontal gaps.
+//
+// The algorithm uses a threshold-based approach:
+//   - When horizontal gap < threshold: same-side connections (right→right or left→left)
+//   - When horizontal gap >= threshold: opposing sides (right→left or left→right)
+//
+// This matches the computeOptimalSides algorithm in datastar-flow for
+// client-server consistency in Model C (hybrid) edge routing.
+//
+// Parameters:
+//   - sourceX, sourceY, sourceW, sourceH: source node rectangle
+//   - targetX, targetY, targetW, targetH: target node rectangle
+//   - overlapThreshold: horizontal gap below which same-side routing is used
+//     (pass 0 to use the default of 120px)
+//
+// Returns the optimal sides for source and target nodes.
+func ComputeOptimalSides(
+	sourceX, sourceY, sourceW, sourceH float64,
+	targetX, targetY, targetW, targetH float64,
+	overlapThreshold float64,
+) (sourceSide, targetSide Side) {
+	if overlapThreshold <= 0 {
+		overlapThreshold = DefaultOverlapThreshold
+	}
+
+	// Create temporary nodes for the internal function
+	fromNode := &layoutNode{x: sourceX, y: sourceY, width: sourceW, height: sourceH}
+	toNode := &layoutNode{x: targetX, y: targetY, width: targetW, height: targetH}
+
+	return InferSideFromGapThreshold(fromNode, toNode, overlapThreshold)
+}
+
 // PortConstraint specifies how a port's position is determined.
 type PortConstraint int
 

@@ -145,6 +145,68 @@ func inferSideFromBoundary(fromNode, toNode *layoutNode) (sourceSide, targetSide
 	return srcResult.Side, tgtResult.Side
 }
 
+// InferSideFromGapThreshold determines source and target sides using horizontal
+// gap analysis. This algorithm is designed for interactive scenarios where nodes
+// may overlap or have small horizontal gaps.
+//
+// Logic:
+//   - Overlapping/small horizontal gap (< threshold): same-side connections
+//     (right→right when target is to the right, left→left when target is to the left)
+//   - Normal horizontal separation: opposing sides (right→left or left→right)
+//
+// This algorithm matches datastar-flow's computeOptimalSides for client-server
+// consistency in Model C (hybrid) edge routing.
+//
+// Parameters:
+//   - fromNode, toNode: the source and target nodes
+//   - overlapThreshold: horizontal gap below which same-side routing is used (typically 120px)
+//
+// Returns sides in internal coordinate space (Left/Right only, no Top/Bottom).
+func InferSideFromGapThreshold(fromNode, toNode *layoutNode, overlapThreshold float64) (sourceSide, targetSide Side) {
+	// Compute node centers
+	fromCenterX := fromNode.x + fromNode.width/2
+	toCenterX := toNode.x + toNode.width/2
+
+	// Direction: positive dx means target is to the right of source
+	dx := toCenterX - fromCenterX
+
+	// Compute horizontal gap between node edges
+	fromRight := fromNode.x + fromNode.width
+	fromLeft := fromNode.x
+	toRight := toNode.x + toNode.width
+	toLeft := toNode.x
+
+	// Horizontal gap: positive = separated, negative = overlapping
+	var horizontalGap float64
+	if dx > 0 {
+		// Target is to the right: gap is between source's right edge and target's left edge
+		horizontalGap = toLeft - fromRight
+	} else {
+		// Target is to the left: gap is between target's right edge and source's left edge
+		horizontalGap = fromLeft - toRight
+	}
+
+	// Overlapping or small gap: same-side connections
+	if horizontalGap < overlapThreshold {
+		if dx >= 0 {
+			// Target is to the right - source exits right, target matches
+			return Right, Right
+		}
+		// Target is to the left - source exits left, target matches
+		return Left, Left
+	}
+
+	// Normal horizontal separation: opposing sides
+	if dx > 0 {
+		return Right, Left
+	}
+	return Left, Right
+}
+
+// DefaultOverlapThreshold is the standard horizontal gap threshold for
+// switching to same-side edge routing (120px).
+const DefaultOverlapThreshold = 120.0
+
 // edgePortSideBoundary computes the attachment side for a PortFixedOffset port
 // using boundary intersection. The side is determined by where a ray from the
 // port's position toward the connected node's center exits the node boundary.

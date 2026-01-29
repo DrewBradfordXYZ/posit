@@ -244,7 +244,7 @@ type Options struct {
 
 	// StackingMinSep is the minimum horizontal separation between connected
 	// nodes on adjacent layers when PreventStacking is enabled.
-	// Default: NodeSep / 2.
+	// Default: 120 (matches ComputeOptimalSides gap threshold to avoid same-side routing).
 	StackingMinSep float64
 }
 

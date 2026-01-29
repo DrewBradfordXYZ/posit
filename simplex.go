@@ -1150,10 +1150,10 @@ func (xs *xSimplexState) buildAuxiliaryGraph() {
 // addAntiStackingEdges adds separation constraints between connected nodes
 // on adjacent layers to prevent vertical stacking.
 func (xs *xSimplexState) addAntiStackingEdges() {
-	// Get minimum separation (default to NodeSep/2)
+	// Get minimum separation (default to gap threshold for same-side routing)
 	minSep := xs.s.opts.StackingMinSep
 	if minSep <= 0 {
-		minSep = xs.s.opts.NodeSep / 2
+		minSep = DefaultOverlapThreshold // 120px - matches ComputeOptimalSides threshold
 	}
 
 	// For each edge in the original graph, check if endpoints are on adjacent layers

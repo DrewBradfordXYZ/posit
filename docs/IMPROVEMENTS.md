@@ -201,7 +201,7 @@ g.AddNode("users", posit.NodeOptions{
 })
 ```
 
-Each port stays at its declared Y offset (matching the CSS row height) while Posit selects Left or Right based on where the connected node is positioned.
+Each port uses its declared Y offset for layout decisions (approximate row position) while Posit selects Left or Right based on where the connected node is positioned. The client measures actual handle positions from the DOM for pixel-precise edge rendering.
 
 ---
 

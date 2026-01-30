@@ -38,7 +38,7 @@ Each mode corresponds to what the consumer actually knows:
 | Everything | — | `PortFixedPos` |
 | Which side | Where on that side | `PortFixedSide` / `PortFixedOrder` |
 | Nothing | — | `PortFree` |
-| The exact offset (from CSS/domain) | Which side (depends on geometry) | `PortFixedOffset` |
+| Approximate offset (row position) | Which side (depends on geometry) | `PortFixedOffset` |
 
 ### PortFixedOffset for Schema Diagrams
 
@@ -74,22 +74,37 @@ Same input always produces same output. Since the consumer doesn't inject geomet
 - Results can be cached by graph hash
 - No layout jitter from inconsistent guesses
 
-### Avoiding DOM Measurement
+### Port Positioning Architecture
 
-In schema diagrams, each table node contains field rows rendered by HTML/CSS. The port for each field attaches at that row's Y position. Without server-computed offsets, the client would need to:
+In schema diagrams, each table node contains field rows rendered by HTML/CSS. The port for each field attaches at that row's Y position. There are two approaches:
 
-1. Query the DOM to find where each field row actually rendered (`getBoundingClientRect`)
-2. Trigger layout reflow if the DOM has pending changes
-3. Repeat for every port on every node
+**Approach 1: Server-side CSS prediction (not recommended)**
 
-With `PortFixedOffset`, the consumer declares the offset they already know from their CSS/layout rules. The server computes the side and echoes the offset back. The client renders with simple addition:
+The server attempts to predict CSS layout using hardcoded constants, then provides exact offsets. This approach is fragile because:
+- CSS layout varies between browsers, zoom levels, and font rendering
+- Server cannot accurately predict where the browser will render elements
+- Small discrepancies (even 10-15px) cause visible misalignment
+
+**Approach 2: Client-side measurement (recommended)**
+
+The server provides **approximate** offsets (good enough for side selection), and the client measures actual positions from the DOM:
 
 ```js
-portX = nodeLeft + serverOX
-portY = nodeTop + serverOY
+// Client measures actual handle position after render
+const rect = handleElement.getBoundingClientRect()
+const portY = rect.top + rect.height/2 - nodeRect.top
 ```
 
-No DOM queries. No layout reflow.
+With `PortFixedOffset`, the consumer provides approximate offsets for posit's layout algorithm. Posit uses these to:
+1. Determine optimal side (left/right) based on connected node positions
+2. Make spacing decisions during layout
+
+The client then:
+1. Renders nodes and handles
+2. Measures actual handle positions via `getBoundingClientRect()`
+3. Uses measured positions for edge attachment
+
+This separates concerns: posit handles graph topology and routing decisions, the browser handles pixel-precise CSS rendering.
 
 ## Future Extensions
 

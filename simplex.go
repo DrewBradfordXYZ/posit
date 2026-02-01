@@ -1148,16 +1148,18 @@ func (xs *xSimplexState) buildAuxiliaryGraph() {
 }
 
 // addAntiStackingEdges adds separation constraints between connected nodes
-// on adjacent layers to prevent vertical stacking.
+// to ensure minimum horizontal gap (default 120px) for proper edge routing.
+// This ensures the client-side same-side routing threshold works correctly:
+// layout-positioned nodes get opposing sides, user-dragged overlaps get same-side.
 func (xs *xSimplexState) addAntiStackingEdges() {
 	// Get minimum separation (default to gap threshold for same-side routing)
 	minSep := xs.s.opts.StackingMinSep
 	if minSep <= 0 {
-		minSep = DefaultOverlapThreshold // 120px - matches ComputeOptimalSides threshold
+		minSep = DefaultOverlapThreshold // 120px - matches client-side threshold
 	}
 
-	// For each edge in the original graph, check if endpoints are on adjacent layers
-	// and add separation constraint if they're close to being stacked
+	// For each edge in the original graph, add separation constraint
+	// to ensure connected nodes have at least minSep horizontal gap
 	for key := range xs.s.edges {
 		fromNode := xs.s.nodes[key.from]
 		toNode := xs.s.nodes[key.to]
@@ -1165,47 +1167,30 @@ func (xs *xSimplexState) addAntiStackingEdges() {
 			continue
 		}
 
-		// Skip if not on adjacent layers
-		layerDiff := toNode.rank - fromNode.rank
-		if layerDiff < 0 {
-			layerDiff = -layerDiff
-		}
-		if layerDiff != 1 {
-			continue // Only constrain direct layer-to-layer connections
+		// Skip self-loops
+		if key.from == key.to {
+			continue
 		}
 
-		// Check if nodes are "stacked" (horizontally overlapping or very close)
-		// Use horizontal bounds: [x, x + width]
-		fromLeft := fromNode.x
-		fromRight := fromNode.x + fromNode.width
-		toLeft := toNode.x
-		toRight := toNode.x + toNode.width
-
-		// Overlap exists if ranges intersect
-		// No overlap if: fromRight < toLeft OR toRight < fromLeft
-		overlapping := !(fromRight < toLeft-minSep || toRight < fromLeft-minSep)
-
-		if !overlapping {
-			continue // Already separated enough
-		}
-
-		// Add separation constraint: push the right node further right
+		// Add separation constraint unconditionally to ensure minSep gap.
 		// Determine which node is on the left (smaller X center)
 		fromCenter := fromNode.x + fromNode.width/2
 		toCenter := toNode.x + toNode.width/2
 
 		var leftID, rightID string
-		var leftNode, rightNode *layoutNode
+		var leftNode *layoutNode
 		if fromCenter <= toCenter {
 			leftID, rightID = key.from, key.to
-			leftNode, rightNode = fromNode, toNode
+			leftNode = fromNode
 		} else {
 			leftID, rightID = key.to, key.from
-			leftNode, rightNode = toNode, fromNode
+			leftNode = toNode
 		}
 
-		// Delta = half-widths + minimum separation (center-to-center distance)
-		delta := leftNode.width/2 + rightNode.width/2 + minSep
+		// Delta = left node width + minimum separation
+		// This ensures: rightNode.x >= leftNode.x + leftNode.width + minSep
+		// i.e., the gap between rightEdge(leftNode) and leftEdge(rightNode) >= minSep
+		delta := leftNode.width + minSep
 
 		// Add constraint edge: rightNode.x >= leftNode.x + delta
 		// Weight = 0 (constraint only, doesn't affect objective)

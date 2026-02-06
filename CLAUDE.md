@@ -12,7 +12,7 @@ After any change, run:
 go test -run TestContract -v
 ```
 
-These tests enforce the contract across 11 graph topologies. If they fail, the change violates a guarantee that downstream consumers depend on.
+These tests enforce the contract across 11 graph topologies (16 contract test functions). If they fail, the change violates a guarantee that downstream consumers depend on.
 
 ## Key Files
 
@@ -34,20 +34,20 @@ These tests enforce the contract across 11 graph topologies. If they fail, the c
 
 ### Supporting
 - `state.go` — Internal layout pipeline and `buildLayout()` (where output is constructed)
-- `boundary.go` — Boundary node handling
+- `boundary.go` — Geometry helpers: ray-rectangle intersection, side inference
 - `components.go` — Disconnected component layout
 - `direction.go` — Layout direction (TB, BT, LR, RL)
 
 ### Tests
 - `contract_test.go` — Property tests enforcing the contract
 - `stress_test.go` — Large graph stress tests
+- `benchmark_test.go` — Performance benchmarks (use `benchstat` to compare)
 - `*_test.go` — Unit tests for each module
 
 ## Documentation
 
 - `docs/ARCHITECTURE.md` — Detailed architecture and design decisions
-- `literature/` — Algorithm references (Sugiyama, Network Simplex, Brandes-Köpf, etc.)
-- `_refs/` — Reference implementations (ELK, MSAGL, dagre)
+- `_ref/` — Reference implementations (ELK, MSAGL, dagre)
 
 ## Testing
 
@@ -60,6 +60,6 @@ go test -bench=. -count=5     # Performance (use benchstat to compare)
 
 ## Architecture
 
-The layout pipeline runs in phases: cycle removal → ranking → dummy nodes → crossing minimization → coordinate assignment → cross-layer overlap resolution → port computation → edge routing. Each phase is a method on `layoutState` in `state.go`.
+The layout pipeline runs in phases: cycle removal → ranking → dummy nodes → crossing minimization → coordinate assignment → cross-layer overlap resolution → port computation → edge routing → component packing. Each phase is a method on `layoutState` in `state.go`.
 
 The algorithm is deterministic: same input always produces same output. There is no randomness.

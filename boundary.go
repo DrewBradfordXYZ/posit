@@ -1,20 +1,20 @@
 package posit
 
-// Rect represents a node's bounding rectangle.
-type Rect struct {
+// rect represents a node's bounding rectangle.
+type rect struct {
 	Left, Right, Top, Bottom float64
 }
 
-// IntersectResult contains the intersection point and which side it's on.
-type IntersectResult struct {
+// intersectResult contains the intersection point and which side it's on.
+type intersectResult struct {
 	Point  EdgePoint // Intersection coordinates
 	Side   Side      // Which side of the rectangle
 	Offset float64   // Distance along that side from its start
 }
 
 // nodeRect returns the bounding rectangle for a layout node.
-func nodeRect(n *layoutNode) Rect {
-	return Rect{
+func nodeRect(n *layoutNode) rect {
+	return rect{
 		Left:   n.x,
 		Right:  n.x + n.width,
 		Top:    n.y,
@@ -22,7 +22,7 @@ func nodeRect(n *layoutNode) Rect {
 	}
 }
 
-// IntersectLineRect finds where a ray from `from` toward `to` exits rectangle `r`.
+// intersectLineRect finds where a ray from `from` toward `to` exits rectangle `r`.
 // Returns the intersection point, which side, and the offset along that side.
 // The offset is measured from the side's start (top-left corner for that side):
 //   - Left/Right sides: offset from top edge (Y distance)
@@ -30,7 +30,7 @@ func nodeRect(n *layoutNode) Rect {
 //
 // If `from` is at the center of the rectangle and `to` is outside,
 // this finds the exit point. If `from` is outside, behavior is undefined.
-func IntersectLineRect(from, to EdgePoint, r Rect) IntersectResult {
+func intersectLineRect(from, to EdgePoint, r rect) intersectResult {
 	// Direction vector
 	dx := to.X - from.X
 	dy := to.Y - from.Y
@@ -38,7 +38,7 @@ func IntersectLineRect(from, to EdgePoint, r Rect) IntersectResult {
 	// Handle zero movement
 	if dx == 0 && dy == 0 {
 		// No direction - pick a default exit (right side, center)
-		return IntersectResult{
+		return intersectResult{
 			Point:  EdgePoint{X: r.Right, Y: (r.Top + r.Bottom) / 2},
 			Side:   Right,
 			Offset: (r.Bottom - r.Top) / 2,
@@ -104,7 +104,7 @@ func IntersectLineRect(from, to EdgePoint, r Rect) IntersectResult {
 	// If no valid intersection found, use center-based fallback
 	if bestT >= 2.0 {
 		// This shouldn't happen for valid inputs, but provide a sensible default
-		return IntersectResult{
+		return intersectResult{
 			Point:  EdgePoint{X: r.Right, Y: (r.Top + r.Bottom) / 2},
 			Side:   Right,
 			Offset: (r.Bottom - r.Top) / 2,
@@ -120,7 +120,7 @@ func IntersectLineRect(from, to EdgePoint, r Rect) IntersectResult {
 		offset = exitPoint.X - r.Left
 	}
 
-	return IntersectResult{Point: exitPoint, Side: exitSide, Offset: offset}
+	return intersectResult{Point: exitPoint, Side: exitSide, Offset: offset}
 }
 
 // inferSideFromBoundary determines source and target sides by computing
@@ -137,15 +137,15 @@ func inferSideFromBoundary(fromNode, toNode *layoutNode) (sourceSide, targetSide
 	}
 
 	// Find where line from source center exits source boundary
-	srcResult := IntersectLineRect(fromCenter, toCenter, nodeRect(fromNode))
+	srcResult := intersectLineRect(fromCenter, toCenter, nodeRect(fromNode))
 
 	// Find where line from target center exits target boundary (toward source)
-	tgtResult := IntersectLineRect(toCenter, fromCenter, nodeRect(toNode))
+	tgtResult := intersectLineRect(toCenter, fromCenter, nodeRect(toNode))
 
 	return srcResult.Side, tgtResult.Side
 }
 
-// InferSideFromGapThreshold determines source and target sides using horizontal
+// inferSideFromGapThreshold determines source and target sides using horizontal
 // gap analysis. This algorithm is designed for interactive scenarios where nodes
 // may overlap or have small horizontal gaps.
 //
@@ -162,7 +162,7 @@ func inferSideFromBoundary(fromNode, toNode *layoutNode) (sourceSide, targetSide
 //   - overlapThreshold: horizontal gap below which same-side routing is used (typically 120px)
 //
 // Returns sides in internal coordinate space (Left/Right only, no Top/Bottom).
-func InferSideFromGapThreshold(fromNode, toNode *layoutNode, overlapThreshold float64) (sourceSide, targetSide Side) {
+func inferSideFromGapThreshold(fromNode, toNode *layoutNode, overlapThreshold float64) (sourceSide, targetSide Side) {
 	// Compute node centers
 	fromCenterX := fromNode.x + fromNode.width/2
 	toCenterX := toNode.x + toNode.width/2
@@ -203,9 +203,9 @@ func InferSideFromGapThreshold(fromNode, toNode *layoutNode, overlapThreshold fl
 	return Left, Right
 }
 
-// DefaultOverlapThreshold is the standard horizontal gap threshold for
+// defaultOverlapThreshold is the standard horizontal gap threshold for
 // switching to same-side edge routing (120px).
-const DefaultOverlapThreshold = 120.0
+const defaultOverlapThreshold = 120.0
 
 // edgePortSideBoundary computes the attachment side for a PortFixedOffset port
 // using boundary intersection. The side is determined by where a ray from the
@@ -244,7 +244,7 @@ func (s *layoutState) edgePortSideBoundary(port *PortOptions, thisNode, connNode
 	}
 
 	// Find exit intersection
-	result := IntersectLineRect(portPoint, tgtPoint, nodeRect(thisNode))
+	result := intersectLineRect(portPoint, tgtPoint, nodeRect(thisNode))
 
 	// Result.Side is in internal space - transform to user space
 	side := s.internalToUserSide(result.Side)
@@ -372,7 +372,7 @@ func (s *layoutState) assignPortSideFromBoundary(node *layoutNode, port *PortOpt
 			X: conn.x + conn.width/2,
 			Y: conn.y + conn.height/2,
 		}
-		result := IntersectLineRect(portPoint, connCenter, nodeRect(node))
+		result := intersectLineRect(portPoint, connCenter, nodeRect(node))
 
 		// Result.Side is in internal space - transform to user space
 		side := s.internalToUserSide(result.Side)

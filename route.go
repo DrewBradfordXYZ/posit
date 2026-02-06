@@ -143,8 +143,16 @@ func (s *layoutState) buildChainPathsParallel(chains []string) []chainPathResult
 // buildChainPath walks a single dummy chain to compute its path points.
 // Reads only from s.nodes, s.predecessors, s.successors (all read-only during routing).
 func (s *layoutState) buildChainPath(firstDummy string) chainPathResult {
-	edge := s.nodes[firstDummy].edgeLabel
-	sourceID := s.predecessors[firstDummy][0]
+	node := s.nodes[firstDummy]
+	if node == nil || node.edgeLabel == nil {
+		return chainPathResult{sourceID: firstDummy, edge: &layoutEdge{}}
+	}
+	edge := node.edgeLabel
+	preds := s.predecessors[firstDummy]
+	if len(preds) == 0 {
+		return chainPathResult{sourceID: firstDummy, edge: edge}
+	}
+	sourceID := preds[0]
 
 	result := chainPathResult{
 		sourceID:   sourceID,
@@ -379,7 +387,8 @@ func (s *layoutState) intersectRect(node *layoutNode, point EdgePoint) EdgePoint
 	dx := point.X - cx
 	dy := point.Y - cy
 
-	if dx == 0 && dy == 0 {
+	const epsilon = 1e-10
+	if math.Abs(dx) < epsilon && math.Abs(dy) < epsilon {
 		return EdgePoint{X: cx, Y: cy}
 	}
 
@@ -561,7 +570,7 @@ func (s *layoutState) offsetParallelEdges() {
 				}
 
 				length := math.Sqrt(dx*dx + dy*dy)
-				if length == 0 {
+				if length < 1e-10 {
 					newPts[j] = pts[j]
 					continue
 				}

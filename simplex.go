@@ -518,7 +518,11 @@ func (t *spanningTree) enterEdge(s *layoutState, leave edgeKey) edgeKey {
 // getParentEdgeKey returns the edge key connecting v to its parent in the tree.
 // Returns the key and whether v is the "from" node in that key.
 func (t *spanningTree) getParentEdgeKey(v string) (edgeKey, bool) {
-	parent := t.nodes[v].parent
+	tnode := t.nodes[v]
+	if tnode == nil {
+		return edgeKey{}, false
+	}
+	parent := tnode.parent
 	if parent == "" {
 		return edgeKey{}, false
 	}
@@ -870,8 +874,9 @@ func (s *layoutState) assignLayersNetworkSimplex() {
 		return tree.sortedEdgeKeys[i].to < tree.sortedEdgeKeys[j].to
 	})
 
-	// Step 5: Iterate until optimal (no negative cut values)
-	maxIterations := max(len(s.nodes)*len(s.edges), 100)
+	// Step 5: Iterate until optimal (no negative cut values).
+	// Cap at 50000 to prevent excessive runtime on large graphs.
+	maxIterations := min(max(len(s.nodes)*len(s.edges), 100), 50000)
 
 	for i := 0; i < maxIterations; i++ {
 		leave, found := tree.leaveEdge()
@@ -1052,8 +1057,8 @@ func (s *layoutState) assignXCoordinatesNetworkSimplex() {
 		return xEdgeKeyLess(xs.sortedEdgeKeys[i], xs.sortedEdgeKeys[j])
 	})
 
-	// Iterate until optimal
-	maxIterations := max(len(xs.auxNodes)*len(xs.auxEdges), 1000)
+	// Iterate until optimal. Cap at 50000 to prevent excessive runtime.
+	maxIterations := min(max(len(xs.auxNodes)*len(xs.auxEdges), 1000), 50000)
 	for i := 0; i < maxIterations; i++ {
 		leave, found := xs.leaveEdge()
 		if !found {
@@ -1155,7 +1160,7 @@ func (xs *xSimplexState) addAntiStackingEdges() {
 	// Get minimum separation (default to gap threshold for same-side routing)
 	minSep := xs.s.opts.StackingMinSep
 	if minSep <= 0 {
-		minSep = DefaultOverlapThreshold // 120px - matches client-side threshold
+		minSep = defaultOverlapThreshold // 120px - matches client-side threshold
 	}
 
 	// For each edge in the original graph, add separation constraint

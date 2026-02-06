@@ -646,6 +646,80 @@ func TestContract_NoNodeOverlap(t *testing.T) {
 	}
 }
 
+func TestContract_EdgeSidesPopulated(t *testing.T) {
+	// SourceSide and TargetSide are always populated on every edge.
+	for _, f := range generateFixtures() {
+		t.Run(f.name, func(t *testing.T) {
+			layout := f.graph.Layout(f.opts)
+
+			for key, e := range layout.Edges {
+				if e.SourceSide < Top || e.SourceSide > Right {
+					t.Errorf("edge %q: invalid SourceSide %v", key, e.SourceSide)
+				}
+				if e.TargetSide < Top || e.TargetSide > Right {
+					t.Errorf("edge %q: invalid TargetSide %v", key, e.TargetSide)
+				}
+			}
+		})
+	}
+}
+
+func TestContract_CrossLayerSpacing(t *testing.T) {
+	// When NodeNodeBetweenLayers > 0, nodes in adjacent layers with
+	// overlapping X ranges must have at least that much vertical gap.
+	fixtures := generateFixtures()
+	for _, f := range fixtures {
+		t.Run(f.name, func(t *testing.T) {
+			opts := f.opts
+			opts.NodeNodeBetweenLayers = 30
+
+			layout := f.graph.Layout(opts)
+
+			// Build layers: group nodes by approximate Y bands
+			type nodeRect struct {
+				id                  string
+				x, y, width, height float64
+			}
+			var nodes []nodeRect
+			for id, n := range layout.Nodes {
+				if f.graph.nodes[id] != nil && f.graph.nodes[id].isCluster {
+					continue
+				}
+				nodes = append(nodes, nodeRect{id, n.X, n.Y, n.Width, n.Height})
+			}
+
+			// Check all pairs in adjacent layers
+			for i := 0; i < len(nodes); i++ {
+				for j := i + 1; j < len(nodes); j++ {
+					a, b := nodes[i], nodes[j]
+					// Check X-range overlap
+					overlapX := a.x < b.x+b.width && b.x < a.x+a.width
+					if !overlapX {
+						continue
+					}
+					// Compute vertical gap
+					var gap float64
+					if a.y+a.height <= b.y {
+						gap = b.y - (a.y + a.height)
+					} else if b.y+b.height <= a.y {
+						gap = a.y - (b.y + b.height)
+					} else {
+						continue // Same layer or overlapping — checked by NoNodeOverlap
+					}
+					// Only check nodes that are in adjacent layers (gap < RankSep*2)
+					if gap > opts.RankSep*2 {
+						continue
+					}
+					if gap < opts.NodeNodeBetweenLayers-1 { // -1 tolerance for float rounding
+						t.Errorf("nodes %q and %q: vertical gap %.1f < required %.1f",
+							a.id, b.id, gap, opts.NodeNodeBetweenLayers)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestContract_EmptyGraph(t *testing.T) {
 	// Empty graph produces empty layout (not nil maps).
 	g := NewGraph()

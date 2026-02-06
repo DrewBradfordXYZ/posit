@@ -12,10 +12,10 @@ func floatEq(a, b float64) bool {
 }
 
 func TestIntersectLineRect_ExitRight(t *testing.T) {
-	r := Rect{Left: 0, Right: 100, Top: 0, Bottom: 50}
+	r := rect{Left: 0, Right: 100, Top: 0, Bottom: 50}
 	from := EdgePoint{X: 50, Y: 25} // center
 	to := EdgePoint{X: 200, Y: 25}  // directly right
-	result := IntersectLineRect(from, to, r)
+	result := intersectLineRect(from, to, r)
 
 	if result.Side != Right {
 		t.Errorf("expected Side=Right, got %v", result.Side)
@@ -32,10 +32,10 @@ func TestIntersectLineRect_ExitRight(t *testing.T) {
 }
 
 func TestIntersectLineRect_ExitLeft(t *testing.T) {
-	r := Rect{Left: 0, Right: 100, Top: 0, Bottom: 50}
+	r := rect{Left: 0, Right: 100, Top: 0, Bottom: 50}
 	from := EdgePoint{X: 50, Y: 25} // center
 	to := EdgePoint{X: -100, Y: 25} // directly left
-	result := IntersectLineRect(from, to, r)
+	result := intersectLineRect(from, to, r)
 
 	if result.Side != Left {
 		t.Errorf("expected Side=Left, got %v", result.Side)
@@ -49,10 +49,10 @@ func TestIntersectLineRect_ExitLeft(t *testing.T) {
 }
 
 func TestIntersectLineRect_ExitBottom(t *testing.T) {
-	r := Rect{Left: 0, Right: 100, Top: 0, Bottom: 50}
+	r := rect{Left: 0, Right: 100, Top: 0, Bottom: 50}
 	from := EdgePoint{X: 50, Y: 25} // center
 	to := EdgePoint{X: 50, Y: 100}  // directly down
-	result := IntersectLineRect(from, to, r)
+	result := intersectLineRect(from, to, r)
 
 	if result.Side != Bottom {
 		t.Errorf("expected Side=Bottom, got %v", result.Side)
@@ -69,10 +69,10 @@ func TestIntersectLineRect_ExitBottom(t *testing.T) {
 }
 
 func TestIntersectLineRect_ExitTop(t *testing.T) {
-	r := Rect{Left: 0, Right: 100, Top: 0, Bottom: 50}
+	r := rect{Left: 0, Right: 100, Top: 0, Bottom: 50}
 	from := EdgePoint{X: 50, Y: 25} // center
 	to := EdgePoint{X: 50, Y: -50}  // directly up
-	result := IntersectLineRect(from, to, r)
+	result := intersectLineRect(from, to, r)
 
 	if result.Side != Top {
 		t.Errorf("expected Side=Top, got %v", result.Side)
@@ -87,10 +87,10 @@ func TestIntersectLineRect_ExitTop(t *testing.T) {
 
 func TestIntersectLineRect_Diagonal_ExitRight(t *testing.T) {
 	// Wide rectangle: diagonal should exit through right side
-	r := Rect{Left: 0, Right: 100, Top: 0, Bottom: 50}
+	r := rect{Left: 0, Right: 100, Top: 0, Bottom: 50}
 	from := EdgePoint{X: 50, Y: 25}  // center
 	to := EdgePoint{X: 200, Y: 100}  // diagonal right+down
-	result := IntersectLineRect(from, to, r)
+	result := intersectLineRect(from, to, r)
 
 	// For a 100x50 rect, moving 150 right and 75 down from center at (50,25):
 	// To reach right edge (x=100): need t where 50 + t*150 = 100 → t = 50/150 = 1/3
@@ -105,10 +105,10 @@ func TestIntersectLineRect_Diagonal_ExitRight(t *testing.T) {
 
 func TestIntersectLineRect_Diagonal_ExitBottom(t *testing.T) {
 	// Tall rectangle: diagonal should exit through bottom side
-	r := Rect{Left: 0, Right: 50, Top: 0, Bottom: 100}
+	r := rect{Left: 0, Right: 50, Top: 0, Bottom: 100}
 	from := EdgePoint{X: 25, Y: 50}   // center
 	to := EdgePoint{X: 100, Y: 200}   // diagonal right+down
-	result := IntersectLineRect(from, to, r)
+	result := intersectLineRect(from, to, r)
 
 	// For a 50x100 rect, moving 75 right and 150 down from center at (25,50):
 	// To reach right edge (x=50): t = 25/75 = 1/3
@@ -122,10 +122,10 @@ func TestIntersectLineRect_Diagonal_ExitBottom(t *testing.T) {
 
 func TestIntersectLineRect_Diagonal_ClearRight(t *testing.T) {
 	// Wide rectangle, shallow diagonal → clearly exits right
-	r := Rect{Left: 0, Right: 100, Top: 0, Bottom: 50}
+	r := rect{Left: 0, Right: 100, Top: 0, Bottom: 50}
 	from := EdgePoint{X: 50, Y: 25}  // center
 	to := EdgePoint{X: 200, Y: 30}   // mostly horizontal, slight down
-	result := IntersectLineRect(from, to, r)
+	result := intersectLineRect(from, to, r)
 
 	if result.Side != Right {
 		t.Errorf("expected Side=Right for shallow diagonal, got %v", result.Side)
@@ -134,10 +134,10 @@ func TestIntersectLineRect_Diagonal_ClearRight(t *testing.T) {
 
 func TestIntersectLineRect_Diagonal_ClearBottom(t *testing.T) {
 	// Flat rectangle, steep diagonal → clearly exits bottom
-	r := Rect{Left: 0, Right: 100, Top: 0, Bottom: 50}
+	r := rect{Left: 0, Right: 100, Top: 0, Bottom: 50}
 	from := EdgePoint{X: 50, Y: 25}  // center
 	to := EdgePoint{X: 55, Y: 200}   // mostly vertical, slight right
-	result := IntersectLineRect(from, to, r)
+	result := intersectLineRect(from, to, r)
 
 	if result.Side != Bottom {
 		t.Errorf("expected Side=Bottom for steep diagonal, got %v", result.Side)
@@ -146,10 +146,10 @@ func TestIntersectLineRect_Diagonal_ClearBottom(t *testing.T) {
 
 func TestIntersectLineRect_ZeroMovement(t *testing.T) {
 	// When from == to, should return a sensible default
-	r := Rect{Left: 0, Right: 100, Top: 0, Bottom: 50}
+	r := rect{Left: 0, Right: 100, Top: 0, Bottom: 50}
 	from := EdgePoint{X: 50, Y: 25}
 	to := EdgePoint{X: 50, Y: 25}
-	result := IntersectLineRect(from, to, r)
+	result := intersectLineRect(from, to, r)
 
 	// Should get a default (right side, center)
 	if result.Side != Right {
@@ -160,10 +160,10 @@ func TestIntersectLineRect_ZeroMovement(t *testing.T) {
 func TestIntersectLineRect_OverlappingNodes(t *testing.T) {
 	// When target is inside source bounds, intersection still works
 	// The ray direction determines exit point
-	r := Rect{Left: 0, Right: 100, Top: 0, Bottom: 100}
+	r := rect{Left: 0, Right: 100, Top: 0, Bottom: 100}
 	from := EdgePoint{X: 50, Y: 50}  // center of source
 	to := EdgePoint{X: 75, Y: 50}    // inside source but to the right
-	result := IntersectLineRect(from, to, r)
+	result := intersectLineRect(from, to, r)
 
 	if result.Side != Right {
 		t.Errorf("expected Side=Right for target inside but to right, got %v", result.Side)
@@ -172,10 +172,10 @@ func TestIntersectLineRect_OverlappingNodes(t *testing.T) {
 
 func TestIntersectLineRect_OffsetAccuracy(t *testing.T) {
 	// Verify offset calculation is accurate
-	r := Rect{Left: 0, Right: 100, Top: 0, Bottom: 100}
+	r := rect{Left: 0, Right: 100, Top: 0, Bottom: 100}
 	from := EdgePoint{X: 50, Y: 50}  // center
 	to := EdgePoint{X: 200, Y: 75}   // right and slightly down
-	result := IntersectLineRect(from, to, r)
+	result := intersectLineRect(from, to, r)
 
 	if result.Side != Right {
 		t.Errorf("expected Side=Right, got %v", result.Side)
@@ -509,7 +509,7 @@ func TestAssignPortSideFromBoundary_TargetPort(t *testing.T) {
 }
 
 // =============================================================================
-// InferSideFromGapThreshold tests
+// inferSideFromGapThreshold tests
 // =============================================================================
 
 func TestInferSideFromGapThreshold_WellSeparatedRightward(t *testing.T) {
@@ -518,7 +518,7 @@ func TestInferSideFromGapThreshold_WellSeparatedRightward(t *testing.T) {
 	from := &layoutNode{x: 0, y: 0, width: 100, height: 50}
 	to := &layoutNode{x: 300, y: 0, width: 100, height: 50} // gap = 200
 
-	srcSide, tgtSide := InferSideFromGapThreshold(from, to, 120)
+	srcSide, tgtSide := inferSideFromGapThreshold(from, to, 120)
 
 	if srcSide != Right {
 		t.Errorf("source: expected Right, got %v", srcSide)
@@ -534,7 +534,7 @@ func TestInferSideFromGapThreshold_WellSeparatedLeftward(t *testing.T) {
 	from := &layoutNode{x: 300, y: 0, width: 100, height: 50}
 	to := &layoutNode{x: 0, y: 0, width: 100, height: 50} // gap = 200
 
-	srcSide, tgtSide := InferSideFromGapThreshold(from, to, 120)
+	srcSide, tgtSide := inferSideFromGapThreshold(from, to, 120)
 
 	if srcSide != Left {
 		t.Errorf("source: expected Left, got %v", srcSide)
@@ -550,7 +550,7 @@ func TestInferSideFromGapThreshold_SmallGapRightward(t *testing.T) {
 	from := &layoutNode{x: 0, y: 0, width: 100, height: 50}
 	to := &layoutNode{x: 150, y: 50, width: 100, height: 50} // gap = 50
 
-	srcSide, tgtSide := InferSideFromGapThreshold(from, to, 120)
+	srcSide, tgtSide := inferSideFromGapThreshold(from, to, 120)
 
 	if srcSide != Right {
 		t.Errorf("source: expected Right, got %v", srcSide)
@@ -566,7 +566,7 @@ func TestInferSideFromGapThreshold_SmallGapLeftward(t *testing.T) {
 	from := &layoutNode{x: 150, y: 0, width: 100, height: 50}
 	to := &layoutNode{x: 0, y: 50, width: 100, height: 50} // gap = 50
 
-	srcSide, tgtSide := InferSideFromGapThreshold(from, to, 120)
+	srcSide, tgtSide := inferSideFromGapThreshold(from, to, 120)
 
 	if srcSide != Left {
 		t.Errorf("source: expected Left, got %v", srcSide)
@@ -582,7 +582,7 @@ func TestInferSideFromGapThreshold_OverlappingRightward(t *testing.T) {
 	from := &layoutNode{x: 0, y: 0, width: 100, height: 50}
 	to := &layoutNode{x: 50, y: 100, width: 100, height: 50} // overlapping
 
-	srcSide, tgtSide := InferSideFromGapThreshold(from, to, 120)
+	srcSide, tgtSide := inferSideFromGapThreshold(from, to, 120)
 
 	if srcSide != Right {
 		t.Errorf("source: expected Right, got %v", srcSide)
@@ -598,7 +598,7 @@ func TestInferSideFromGapThreshold_OverlappingLeftward(t *testing.T) {
 	from := &layoutNode{x: 50, y: 0, width: 100, height: 50}
 	to := &layoutNode{x: 0, y: 100, width: 100, height: 50} // overlapping
 
-	srcSide, tgtSide := InferSideFromGapThreshold(from, to, 120)
+	srcSide, tgtSide := inferSideFromGapThreshold(from, to, 120)
 
 	if srcSide != Left {
 		t.Errorf("source: expected Left, got %v", srcSide)

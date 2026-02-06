@@ -15,8 +15,9 @@ type crossLayerOverlap struct {
 // overlapContext holds pre-computed data for efficient overlap resolution.
 // Built once per resolution pass to avoid O(n²×m) edge lookups.
 type overlapContext struct {
-	directEdges map[[2]string]bool // O(1) edge lookup
-	connCounts  map[string]int     // O(1) connection count lookup
+	directEdges map[[2]string]bool   // O(1) edge lookup
+	connCounts  map[string]int       // O(1) connection count lookup
+	rankNodes   map[int][]*layoutNode // non-dummy, non-cluster nodes by rank (sorted by X)
 }
 
 // resolveCrossLayerOverlaps adjusts node positions to ensure minimum
@@ -50,11 +51,12 @@ func (s *layoutState) resolveCrossLayerOverlaps() {
 	}
 }
 
-// buildOverlapContext pre-computes edge and connection data for efficient lookup.
+// buildOverlapContext pre-computes edge, connection, and rank data for efficient lookup.
 func (s *layoutState) buildOverlapContext() *overlapContext {
 	ctx := &overlapContext{
 		directEdges: make(map[[2]string]bool),
 		connCounts:  make(map[string]int),
+		rankNodes:   make(map[int][]*layoutNode),
 	}
 
 	for _, edge := range s.edges {
@@ -67,6 +69,23 @@ func (s *layoutState) buildOverlapContext() *overlapContext {
 		ctx.connCounts[edge.key.to]++
 	}
 
+	// Group non-dummy, non-cluster nodes by rank, sorted by X
+	for _, node := range s.nodes {
+		if node.isDummy {
+			continue
+		}
+		if _, isCluster := s.clusters[node.id]; isCluster {
+			continue
+		}
+		ctx.rankNodes[node.rank] = append(ctx.rankNodes[node.rank], node)
+	}
+	for rank := range ctx.rankNodes {
+		layer := ctx.rankNodes[rank]
+		sort.Slice(layer, func(i, j int) bool {
+			return layer[i].x < layer[j].x
+		})
+	}
+
 	return ctx
 }
 
@@ -75,21 +94,9 @@ func (s *layoutState) buildOverlapContext() *overlapContext {
 func (s *layoutState) findAllCrossLayerOverlaps(ctx *overlapContext) []crossLayerOverlap {
 	var overlaps []crossLayerOverlap
 
-	// Group non-dummy, non-cluster nodes by rank
-	rankNodes := make(map[int][]*layoutNode)
-	for _, node := range s.nodes {
-		if node.isDummy {
-			continue // Skip dummy nodes (edge routing points)
-		}
-		if _, isCluster := s.clusters[node.id]; isCluster {
-			continue // Skip clusters (resized later by adjustClusters)
-		}
-		rankNodes[node.rank] = append(rankNodes[node.rank], node)
-	}
-
-	// Get sorted list of ranks (handles non-consecutive ranks)
-	ranks := make([]int, 0, len(rankNodes))
-	for r := range rankNodes {
+	// Get sorted list of ranks from pre-computed index
+	ranks := make([]int, 0, len(ctx.rankNodes))
+	for r := range ctx.rankNodes {
 		ranks = append(ranks, r)
 	}
 	sort.Ints(ranks)
@@ -98,8 +105,8 @@ func (s *layoutState) findAllCrossLayerOverlaps(ctx *overlapContext) []crossLaye
 	for i := 0; i < len(ranks)-1; i++ {
 		upperRank := ranks[i]
 		lowerRank := ranks[i+1]
-		upperLayer := rankNodes[upperRank]
-		lowerLayer := rankNodes[lowerRank]
+		upperLayer := ctx.rankNodes[upperRank]
+		lowerLayer := ctx.rankNodes[lowerRank]
 
 		for _, upper := range upperLayer {
 			for _, lower := range lowerLayer {
@@ -176,38 +183,34 @@ func (s *layoutState) resolveByHorizontalShift(o crossLayerOverlap, ctx *overlap
 	lowerConns := ctx.connCounts[o.lower.id]
 
 	if upperConns <= lowerConns {
-		if s.tryShiftNode(o.upper, minShift) {
+		if s.tryShiftNode(o.upper, minShift, ctx) {
 			return true
 		}
-		return s.tryShiftNode(o.lower, minShift)
+		return s.tryShiftNode(o.lower, minShift, ctx)
 	}
-	if s.tryShiftNode(o.lower, minShift) {
+	if s.tryShiftNode(o.lower, minShift, ctx) {
 		return true
 	}
-	return s.tryShiftNode(o.upper, minShift)
+	return s.tryShiftNode(o.upper, minShift, ctx)
 }
 
 // tryShiftNode attempts to shift a node horizontally by at least minShift.
+// Uses pre-computed rank index from ctx for O(layerSize) neighbor lookup.
 // Returns true if successful.
-func (s *layoutState) tryShiftNode(n *layoutNode, minShift float64) bool {
-	// Get same-layer neighbors (non-dummy, non-cluster)
+func (s *layoutState) tryShiftNode(n *layoutNode, minShift float64, ctx *overlapContext) bool {
+	// Find same-layer neighbors using pre-sorted rank index
 	var leftNeighbor, rightNeighbor *layoutNode
-	for _, other := range s.nodes {
-		if other.isDummy || other.rank != n.rank || other.id == n.id {
-			continue
-		}
-		if _, isCluster := s.clusters[other.id]; isCluster {
+	for _, other := range ctx.rankNodes[n.rank] {
+		if other.id == n.id {
 			continue
 		}
 		if other.x+other.width <= n.x {
-			// other is to the left
-			if leftNeighbor == nil || other.x > leftNeighbor.x {
-				leftNeighbor = other
-			}
+			// other is to the left — last one wins since sorted by X
+			leftNeighbor = other
 		}
 		if other.x >= n.x+n.width {
-			// other is to the right
-			if rightNeighbor == nil || other.x < rightNeighbor.x {
+			// other is to the right — first one wins since sorted by X
+			if rightNeighbor == nil {
 				rightNeighbor = other
 			}
 		}

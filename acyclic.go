@@ -19,6 +19,13 @@ func (s *layoutState) makeAcyclicDFS() {
 	// Handle self-loops first
 	s.removeSelfLoops()
 
+	// Build (from,to) -> []edgeKey index for O(1) multi-edge lookup
+	edgesByEndpoints := make(map[[2]string][]edgeKey, len(s.edges))
+	for key := range s.edges {
+		pair := [2]string{key.from, key.to}
+		edgesByEndpoints[pair] = append(edgesByEndpoints[pair], key)
+	}
+
 	visited := make(map[string]bool, len(s.nodes))
 	onStack := make(map[string]bool) // currently in DFS path
 
@@ -32,25 +39,21 @@ func (s *layoutState) makeAcyclicDFS() {
 		visited[v] = true
 		onStack[v] = true
 
-		// Iterate over sorted copy to ensure deterministic behavior
+		// Sort a copy for deterministic traversal (adjacency lists
+		// mutate during reversal, so we must re-sort each visit)
 		successors := make([]string, len(s.successors[v]))
 		copy(successors, s.successors[v])
 		sort.Strings(successors)
 
 		for _, w := range successors {
 			if onStack[w] {
-				// Back edge found - reverse all edges from v to w
-				// (multi-edges have distinct IDs, so we must find them all)
-				var keysToReverse []edgeKey
-				for ekey := range s.edges {
-					if ekey.from == v && ekey.to == w {
-						keysToReverse = append(keysToReverse, ekey)
-					}
-				}
-				for _, key := range keysToReverse {
+				// Back edge found - reverse all edges from v to w via O(1) index
+				pair := [2]string{v, w}
+				for _, key := range edgesByEndpoints[pair] {
 					s.reverseEdge(key)
 					reversed = append(reversed, key)
 				}
+				delete(edgesByEndpoints, pair)
 			} else if !visited[w] {
 				dfs(w)
 			}

@@ -251,11 +251,13 @@ type Options struct {
 // DefaultOptions returns sensible defaults for layout.
 func DefaultOptions() Options {
 	return Options{
-		Direction:   TopToBottom,
-		NodeSep:     50,
-		RankSep:     100,
-		Algorithm:   LongestPath,
-		BKThreshold: 100,
+		Direction:      TopToBottom,
+		NodeSep:        50,
+		RankSep:        100,
+		Algorithm:      LongestPath,
+		BKThreshold:    100,
+		ChannelGap:     10,
+		StackingMinSep: 120,
 	}
 }
 
@@ -309,14 +311,14 @@ func ComputeOptimalSides(
 	overlapThreshold float64,
 ) (sourceSide, targetSide Side) {
 	if overlapThreshold <= 0 {
-		overlapThreshold = DefaultOverlapThreshold
+		overlapThreshold = defaultOverlapThreshold
 	}
 
 	// Create temporary nodes for the internal function
 	fromNode := &layoutNode{x: sourceX, y: sourceY, width: sourceW, height: sourceH}
 	toNode := &layoutNode{x: targetX, y: targetY, width: targetW, height: targetH}
 
-	return InferSideFromGapThreshold(fromNode, toNode, overlapThreshold)
+	return inferSideFromGapThreshold(fromNode, toNode, overlapThreshold)
 }
 
 // PortConstraint specifies how a port's position is determined.
@@ -1090,6 +1092,15 @@ func (o Options) Validate() error {
 	}
 	if o.Acyclicer < DFSAcyclicer || o.Acyclicer > GreedyAcyclicer {
 		return fmt.Errorf("posit: invalid Acyclicer value %d", o.Acyclicer)
+	}
+	if o.RouteStyle < RoutePolyline || o.RouteStyle > RouteOrthogonal {
+		return fmt.Errorf("posit: invalid RouteStyle value %d", o.RouteStyle)
+	}
+	if o.ComponentPacking < PackHorizontal || o.ComponentPacking > PackVertical {
+		return fmt.Errorf("posit: invalid ComponentPacking value %d", o.ComponentPacking)
+	}
+	if o.XCoordAlgorithm < XBrandesKopf || o.XCoordAlgorithm > XNetworkSimplex {
+		return fmt.Errorf("posit: invalid XCoordAlgorithm value %d", o.XCoordAlgorithm)
 	}
 	return nil
 }

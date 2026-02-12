@@ -1156,6 +1156,11 @@ func (xs *xSimplexState) buildAuxiliaryGraph() {
 // to ensure minimum horizontal gap (default 120px) for proper edge routing.
 // This ensures the client-side same-side routing threshold works correctly:
 // layout-positioned nodes get opposing sides, user-dragged overlaps get same-side.
+//
+// Uses realEdges (original graph edges before dummy insertion) rather than
+// s.edges (which contains dummy segments). Long edges spanning multiple layers
+// are split into dummy segments, so iterating s.edges would only constrain
+// adjacent dummy pairs, missing the actual source↔target separation.
 func (xs *xSimplexState) addAntiStackingEdges() {
 	// Get minimum separation (default to gap threshold for same-side routing)
 	minSep := xs.s.opts.StackingMinSep
@@ -1163,17 +1168,12 @@ func (xs *xSimplexState) addAntiStackingEdges() {
 		minSep = defaultOverlapThreshold // 120px - matches client-side threshold
 	}
 
-	// For each edge in the original graph, add separation constraint
-	// to ensure connected nodes have at least minSep horizontal gap
-	for key := range xs.s.edges {
-		fromNode := xs.s.nodes[key.from]
-		toNode := xs.s.nodes[key.to]
+	// For each original graph edge, add separation constraint between
+	// the real source and target nodes (not dummy segments)
+	for _, pair := range xs.s.realEdges {
+		fromNode := xs.s.nodes[pair[0]]
+		toNode := xs.s.nodes[pair[1]]
 		if fromNode == nil || toNode == nil {
-			continue
-		}
-
-		// Skip self-loops
-		if key.from == key.to {
 			continue
 		}
 
@@ -1185,10 +1185,10 @@ func (xs *xSimplexState) addAntiStackingEdges() {
 		var leftID, rightID string
 		var leftNode *layoutNode
 		if fromCenter <= toCenter {
-			leftID, rightID = key.from, key.to
+			leftID, rightID = pair[0], pair[1]
 			leftNode = fromNode
 		} else {
-			leftID, rightID = key.to, key.from
+			leftID, rightID = pair[1], pair[0]
 			leftNode = toNode
 		}
 

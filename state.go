@@ -114,6 +114,11 @@ type layoutState struct {
 	parents  map[string]string  // child -> parent cluster ID
 	clusters map[string]float64 // cluster ID -> padding
 
+	// Original edge endpoints (before dummy insertion).
+	// Used by anti-stacking to add constraints between real nodes,
+	// not dummy segments of long edges.
+	realEdges [][2]string
+
 	// Deterministic RNG for stochastic disturbance in adjacent exchange
 	rng *rand.Rand
 
@@ -202,6 +207,18 @@ func newLayoutState(g *Graph, opts Options) *layoutState {
 			s.successors[e.from] = append(s.successors[e.from], e.to)
 			s.predecessors[e.to] = append(s.predecessors[e.to], e.from)
 			adjacencySeen[adjKey] = true
+		}
+	}
+
+	// Store original edge endpoints for anti-stacking constraints.
+	// After addDummyNodes(), s.edges contains dummy segments, but
+	// anti-stacking needs constraints between the real endpoint nodes.
+	seen := make(map[[2]string]bool, len(s.edges))
+	for key := range s.edges {
+		pair := [2]string{key.from, key.to}
+		if key.from != key.to && !seen[pair] {
+			s.realEdges = append(s.realEdges, pair)
+			seen[pair] = true
 		}
 	}
 

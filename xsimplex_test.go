@@ -423,6 +423,52 @@ func TestXSimplex_PreventStacking_CustomSep(t *testing.T) {
 	}
 }
 
+// TestXSimplex_PreventStacking_LongEdge tests anti-stacking with edges spanning
+// multiple layers. Long edges get split into dummy segments — anti-stacking must
+// still constrain the real source/target nodes, not just dummy-to-dummy pairs.
+func TestXSimplex_PreventStacking_LongEdge(t *testing.T) {
+	// Reproduce the ccsit pattern:
+	// Layer 0: A (Customers), B (Totals)
+	// Layer 1: C (Candidates), D (Vendors)
+	// Layer 2: E (Invoices)
+	// Edge A→E spans 2 layers (long edge with dummy)
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{Width: 400, Height: 50}) // Customers (expanded)
+	g.AddNode("B", NodeOptions{Width: 200, Height: 50}) // Totals
+	g.AddNode("C", NodeOptions{Width: 400, Height: 50}) // Candidates
+	g.AddNode("D", NodeOptions{Width: 400, Height: 50}) // Vendors
+	g.AddNode("E", NodeOptions{Width: 400, Height: 50}) // Invoices
+
+	g.MustAddEdge("A", "C") // Customers → Candidates (1 layer)
+	g.MustAddEdge("B", "C") // Totals → Candidates (1 layer)
+	g.MustAddEdge("A", "E") // Customers → Invoices (2 layers - LONG EDGE)
+	g.MustAddEdge("D", "E") // Vendors → Invoices (1 layer)
+
+	layout := g.Layout(Options{
+		XCoordAlgorithm: XNetworkSimplex,
+		NodeSep:         80,
+		RankSep:         100,
+		PreventStacking: true,
+		StackingMinSep:  120,
+	})
+
+	aNode := layout.Nodes["A"]
+	eNode := layout.Nodes["E"]
+
+	// The gap between A's right edge and E's left edge (or vice versa)
+	var gap float64
+	if aNode.X < eNode.X {
+		gap = eNode.X - (aNode.X + aNode.Width)
+	} else {
+		gap = aNode.X - (eNode.X + eNode.Width)
+	}
+
+	if gap < 120-1 { // 1px tolerance
+		t.Errorf("A (Customers) and E (Invoices) connected by long edge: gap=%.0f, want >= 120. A=[%.0f,%.0f w=%.0f], E=[%.0f,%.0f w=%.0f]",
+			gap, aNode.X, aNode.Y, aNode.Width, eNode.X, eNode.Y, eNode.Width)
+	}
+}
+
 // BenchmarkXCoordBK benchmarks Brandes-Köpf algorithm
 func BenchmarkXCoordBK(b *testing.B) {
 	g := buildBenchGraph(50)

@@ -1079,6 +1079,13 @@ func (s *layoutState) assignXCoordinatesNetworkSimplex() {
 	// Extract X coordinates back to layout nodes
 	xs.extractCoordinates()
 
+	// Post-processing: enforce anti-stacking by nudging overlapping connected nodes.
+	// This runs AFTER the simplex (not as constraints) because anti-stacking edges
+	// between cross-layer nodes can create infeasible cycles in the auxiliary graph.
+	if s.opts.PreventStacking {
+		s.enforceAntiStacking()
+	}
+
 	// Normalize: shift so minimum X is 0
 	s.normalizeXCoordinates()
 }
@@ -1145,61 +1152,172 @@ func (xs *xSimplexState) buildAuxiliaryGraph() {
 		}
 	}
 
-	// Step 4: Add cross-layer anti-stacking edges (if enabled)
-	// Skip for very large graphs (>2000 nodes including dummies) as it becomes too slow
-	if xs.s.opts.PreventStacking && len(xs.s.nodes) <= 2000 {
-		xs.addAntiStackingEdges()
+}
+
+// enforceAntiStacking nudges overlapping connected nodes apart as a post-processing
+// step after the X-coordinate simplex completes.
+//
+// This runs AFTER the simplex rather than as constraints because anti-stacking edges
+// between cross-layer nodes create infeasible positive cycles in the auxiliary graph
+// (e.g., A must be 520px right of B, B must be 520px right of C, C must be 520px
+// right of A — impossible). Post-processing avoids this by working with final positions.
+//
+// For each connected pair with insufficient horizontal gap, the node further from the
+// graph's center of mass is pushed outward. Same-layer neighbors are shifted together
+// to maintain ordering constraints.
+func (s *layoutState) enforceAntiStacking() {
+	minSep := s.opts.StackingMinSep
+	if minSep <= 0 {
+		minSep = defaultOverlapThreshold
+	}
+
+	// Build layer membership for same-layer propagation
+	layerOf := make(map[string]int, len(s.nodes))
+	for rank, layer := range s.layers {
+		for _, id := range layer {
+			layerOf[id] = rank
+		}
+	}
+
+	// Compute center of mass for nudge direction
+	var sumX float64
+	var count int
+	for _, n := range s.nodes {
+		if !n.isDummy {
+			sumX += n.x + n.width/2
+			count++
+		}
+	}
+	centerX := sumX / float64(max(count, 1))
+
+	// Iterate until no violations remain (with cap to prevent infinite loops)
+	for iter := 0; iter < 50; iter++ {
+		anyViolation := false
+
+		for _, pair := range s.realEdges {
+			fn := s.nodes[pair[0]]
+			tn := s.nodes[pair[1]]
+			if fn == nil || tn == nil {
+				continue
+			}
+
+			// Compute edge-to-edge gap
+			var gap float64
+			if fn.x <= tn.x {
+				gap = tn.x - (fn.x + fn.width)
+			} else {
+				gap = fn.x - (tn.x + tn.width)
+			}
+
+			if gap >= minSep-0.5 {
+				continue
+			}
+			anyViolation = true
+
+			// Determine which node to push and in which direction.
+			// Push the node whose center is further from the graph center outward.
+			needed := minSep - gap
+			fnCenter := fn.x + fn.width/2
+			tnCenter := tn.x + tn.width/2
+			fnDist := math.Abs(fnCenter - centerX)
+			tnDist := math.Abs(tnCenter - centerX)
+
+			var pushID string
+			var pushDelta float64
+			if fnDist >= tnDist {
+				// Push fn outward
+				pushID = pair[0]
+				if fnCenter >= centerX {
+					pushDelta = needed // Push right
+				} else {
+					pushDelta = -needed // Push left
+				}
+			} else {
+				// Push tn outward
+				pushID = pair[1]
+				if tnCenter >= centerX {
+					pushDelta = needed
+				} else {
+					pushDelta = -needed
+				}
+			}
+
+			// Apply nudge and propagate to same-layer neighbors
+			s.nudgeNodeAndNeighbors(pushID, pushDelta, layerOf)
+		}
+
+		if !anyViolation {
+			break
+		}
 	}
 }
 
-// addAntiStackingEdges adds separation constraints between connected nodes
-// to ensure minimum horizontal gap (default 120px) for proper edge routing.
-// This ensures the client-side same-side routing threshold works correctly:
-// layout-positioned nodes get opposing sides, user-dragged overlaps get same-side.
-//
-// Uses realEdges (original graph edges before dummy insertion) rather than
-// s.edges (which contains dummy segments). Long edges spanning multiple layers
-// are split into dummy segments, so iterating s.edges would only constrain
-// adjacent dummy pairs, missing the actual source↔target separation.
-func (xs *xSimplexState) addAntiStackingEdges() {
-	// Get minimum separation (default to gap threshold for same-side routing)
-	minSep := xs.s.opts.StackingMinSep
-	if minSep <= 0 {
-		minSep = defaultOverlapThreshold // 120px - matches client-side threshold
+// nudgeNodeAndNeighbors shifts a node by delta and propagates the shift to
+// same-layer neighbors that would otherwise violate minimum separation.
+func (s *layoutState) nudgeNodeAndNeighbors(nodeID string, delta float64, layerOf map[string]int) {
+	node := s.nodes[nodeID]
+	if node == nil {
+		return
 	}
 
-	// For each original graph edge, add separation constraint between
-	// the real source and target nodes (not dummy segments)
-	for _, pair := range xs.s.realEdges {
-		fromNode := xs.s.nodes[pair[0]]
-		toNode := xs.s.nodes[pair[1]]
-		if fromNode == nil || toNode == nil {
-			continue
+	node.x += delta
+
+	// Find same-layer neighbors and propagate if needed
+	rank, ok := layerOf[nodeID]
+	if !ok {
+		return
+	}
+	layer := s.layers[rank]
+
+	// Find position of this node in the layer
+	pos := -1
+	for i, id := range layer {
+		if id == nodeID {
+			pos = i
+			break
 		}
+	}
+	if pos < 0 {
+		return
+	}
 
-		// Add separation constraint unconditionally to ensure minSep gap.
-		// Determine which node is on the left (smaller X center)
-		fromCenter := fromNode.x + fromNode.width/2
-		toCenter := toNode.x + toNode.width/2
+	nodeSep := s.opts.NodeSep
+	if nodeSep <= 0 {
+		nodeSep = 20
+	}
 
-		var leftID, rightID string
-		var leftNode *layoutNode
-		if fromCenter <= toCenter {
-			leftID, rightID = pair[0], pair[1]
-			leftNode = fromNode
-		} else {
-			leftID, rightID = pair[1], pair[0]
-			leftNode = toNode
+	// Propagate right if pushed right
+	if delta > 0 {
+		for i := pos + 1; i < len(layer); i++ {
+			prev := s.nodes[layer[i-1]]
+			curr := s.nodes[layer[i]]
+			if curr == nil || prev == nil {
+				break
+			}
+			minX := prev.x + prev.width + nodeSep
+			if curr.x < minX {
+				curr.x = minX
+			} else {
+				break // No further propagation needed
+			}
 		}
+	}
 
-		// Delta = left node width + minimum separation
-		// This ensures: rightNode.x >= leftNode.x + leftNode.width + minSep
-		// i.e., the gap between rightEdge(leftNode) and leftEdge(rightNode) >= minSep
-		delta := leftNode.width + minSep
-
-		// Add constraint edge: rightNode.x >= leftNode.x + delta
-		// Weight = 0 (constraint only, doesn't affect objective)
-		xs.addAuxEdge(leftID, rightID, delta, 0)
+	// Propagate left if pushed left
+	if delta < 0 {
+		for i := pos - 1; i >= 0; i-- {
+			curr := s.nodes[layer[i]]
+			next := s.nodes[layer[i+1]]
+			if curr == nil || next == nil {
+				break
+			}
+			maxX := next.x - curr.width - nodeSep
+			if curr.x > maxX {
+				curr.x = maxX
+			} else {
+				break
+			}
+		}
 	}
 }
 

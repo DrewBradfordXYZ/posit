@@ -1,6 +1,7 @@
 package posit
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -466,6 +467,116 @@ func TestXSimplex_PreventStacking_LongEdge(t *testing.T) {
 	if gap < 120-1 { // 1px tolerance
 		t.Errorf("A (Customers) and E (Invoices) connected by long edge: gap=%.0f, want >= 120. A=[%.0f,%.0f w=%.0f], E=[%.0f,%.0f w=%.0f]",
 			gap, aNode.X, aNode.Y, aNode.Width, eNode.X, eNode.Y, eNode.Width)
+	}
+}
+
+// TestXSimplex_PreventStacking_WideNodes tests anti-stacking with wide nodes
+// on layers that have many nodes (triggering subtree removal optimization).
+func TestXSimplex_PreventStacking_WideNodes(t *testing.T) {
+	g := NewGraph()
+
+	// Layer 0: many wide nodes including "orgs"
+	g.AddNode("orgs", NodeOptions{Width: 400, Height: 50})
+	for i := range 10 {
+		id := fmt.Sprintf("L0_%d", i)
+		g.AddNode(id, NodeOptions{Width: 400, Height: 50})
+	}
+
+	// Layer 1: many nodes including "cs"
+	g.AddNode("cs", NodeOptions{Width: 400, Height: 50})
+	for i := range 10 {
+		id := fmt.Sprintf("L1_%d", i)
+		g.AddNode(id, NodeOptions{Width: 400, Height: 50})
+	}
+
+	// Connect layers
+	for i := range 10 {
+		g.MustAddEdge(fmt.Sprintf("L0_%d", i), fmt.Sprintf("L1_%d", i))
+	}
+	g.MustAddEdge("orgs", "cs")
+	g.MustAddEdge("orgs", "L1_0")
+	g.MustAddEdge("orgs", "L1_1")
+	g.MustAddEdge("L0_0", "cs")
+	g.MustAddEdge("L0_1", "cs")
+
+	layout := g.Layout(Options{
+		XCoordAlgorithm: XNetworkSimplex,
+		NodeSep:         80,
+		RankSep:         100,
+		PreventStacking: true,
+		StackingMinSep:  120,
+	})
+
+	// Check all connected pairs for anti-stacking violations
+	for _, pair := range []struct{ from, to string }{
+		{"orgs", "cs"},
+		{"orgs", "L1_0"}, {"orgs", "L1_1"},
+		{"L0_0", "cs"}, {"L0_1", "cs"},
+	} {
+		a := layout.Nodes[pair.from]
+		b := layout.Nodes[pair.to]
+		var gap float64
+		if a.X < b.X {
+			gap = b.X - (a.X + a.Width)
+		} else {
+			gap = a.X - (b.X + b.Width)
+		}
+		if gap < 120-1 {
+			t.Errorf("%s→%s: edge gap=%.0f, want >= 120", pair.from, pair.to, gap)
+		}
+	}
+}
+
+// TestXSimplex_PreventStacking_ManyLayers tests anti-stacking with connected
+// nodes that span many layers (3+), creating more dummy segments.
+func TestXSimplex_PreventStacking_ManyLayers(t *testing.T) {
+	g := NewGraph()
+
+	// Hub-spoke pattern: hub on layer 0, spokes on layers 1-3
+	g.AddNode("hub", NodeOptions{Width: 400, Height: 50})
+	for layer := 1; layer <= 3; layer++ {
+		for i := range 15 {
+			id := fmt.Sprintf("L%d_%d", layer, i)
+			g.AddNode(id, NodeOptions{Width: 400, Height: 50})
+			g.MustAddEdge("hub", id)
+		}
+		if layer > 1 {
+			for i := range 5 {
+				g.MustAddEdge(fmt.Sprintf("L%d_%d", layer-1, i), fmt.Sprintf("L%d_%d", layer, i))
+			}
+		}
+	}
+
+	layout := g.Layout(Options{
+		XCoordAlgorithm: XNetworkSimplex,
+		NodeSep:         80,
+		RankSep:         100,
+		PreventStacking: true,
+		StackingMinSep:  120,
+	})
+
+	hubNode := layout.Nodes["hub"]
+	violations := 0
+	for layer := 1; layer <= 3; layer++ {
+		for i := range 15 {
+			id := fmt.Sprintf("L%d_%d", layer, i)
+			spoke := layout.Nodes[id]
+			var gap float64
+			if hubNode.X < spoke.X {
+				gap = spoke.X - (hubNode.X + hubNode.Width)
+			} else {
+				gap = hubNode.X - (spoke.X + spoke.Width)
+			}
+			if gap < 120-1 {
+				violations++
+				if violations <= 5 {
+					t.Errorf("hub→%s: edge gap=%.0f, want >= 120", id, gap)
+				}
+			}
+		}
+	}
+	if violations > 5 {
+		t.Errorf("... and %d more violations", violations-5)
 	}
 }
 

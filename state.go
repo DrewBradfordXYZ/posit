@@ -115,7 +115,7 @@ type layoutState struct {
 	clusters map[string]float64 // cluster ID -> padding
 
 	// Original edge endpoints (before dummy insertion).
-	// Used by anti-stacking to add constraints between real nodes,
+	// Used by anti-stacking post-processing to nudge real nodes apart,
 	// not dummy segments of long edges.
 	realEdges [][2]string
 
@@ -210,9 +210,9 @@ func newLayoutState(g *Graph, opts Options) *layoutState {
 		}
 	}
 
-	// Store original edge endpoints for anti-stacking constraints.
+	// Store original edge endpoints for anti-stacking post-processing.
 	// After addDummyNodes(), s.edges contains dummy segments, but
-	// anti-stacking needs constraints between the real endpoint nodes.
+	// anti-stacking needs to nudge the real endpoint nodes apart.
 	seen := make(map[[2]string]bool, len(s.edges))
 	for key := range s.edges {
 		pair := [2]string{key.from, key.to}

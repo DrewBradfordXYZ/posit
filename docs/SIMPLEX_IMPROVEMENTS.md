@@ -4,7 +4,7 @@ Improvements identified from code review comparing Posit's implementation agains
 
 **Quality Rating: 8.5/10** — Production-ready, competitive with Graphviz and superior to ELK/dagre in most areas.
 
-**Note:** Anti-stacking (`STACKING_PREVENTION.md`) is now COMPLETE and enabled for graphs up to 2000 nodes (including dummies). Performance optimizations have made this practical for production use.
+**Note:** Anti-stacking (`STACKING_PREVENTION.md`) is now COMPLETE. Implemented as post-processing after X simplex (not as simplex constraints).
 
 ## Status Overview
 
@@ -114,7 +114,7 @@ Detailed analysis of how Graphviz, ELK, and dagre implement network simplex opti
 | Cached sorted lists | ❌ | ❌ | ❌ | ✅ |
 | Circular search index | ✅ | ❌ | ❌ | ✅ |
 | LCA validation | ✅ | ❌ | ❌ | ✅ |
-| Anti-stacking edges | ❌ | ❌ | ❌ | ✅ |
+| Anti-stacking (post-process) | ❌ | ❌ | ❌ | ✅ |
 
 ### Posit Advantages
 
@@ -122,7 +122,7 @@ Features Posit has that other implementations lack:
 
 1. **X coordinate network simplex** — Posit implements both Y (ranking) and X (coordinate assignment) network simplex. ELK and dagre only do Y ranking; Graphviz does both.
 
-2. **Anti-stacking constraint edges** — Posit can add auxiliary edges to prevent vertical node stacking. No reference implementation has this.
+2. **Anti-stacking post-processing** — Posit nudges connected nodes apart after X simplex to prevent vertical stacking. No reference implementation has this.
 
 3. **Cached sorted lists** — `sortedNodeIDs` and `sortedEdgeKeys` cached once per simplex run. Eliminates allocation+sort overhead on every iteration.
 
@@ -300,18 +300,9 @@ Total measured improvement: **57% faster overall** (geometric mean across all be
 
 Layered graphs benefit most from the full optimization suite. X simplex sees the largest gains due to the auxiliary graph having more edges.
 
-### Anti-Stacking Threshold
+### Anti-Stacking
 
-Anti-stacking is enabled for graphs up to 2000 nodes (including dummies):
-
-```go
-// simplex.go
-if xs.s.opts.PreventStacking && len(xs.s.nodes) <= 2000 {
-    xs.addAntiStackingEdges()
-}
-```
-
-Note: The node count includes dummy nodes inserted for multi-layer edges. A 107-table graph can have 1300+ total nodes after dummy insertion, so the threshold must be high enough to accommodate this overhead.
+Anti-stacking runs as post-processing after the X simplex completes (see `STACKING_PREVENTION.md`). It nudges connected nodes apart to prevent vertical alignment, using `realEdges` to target actual source/target nodes rather than dummy segments of long edges.
 
 ---
 

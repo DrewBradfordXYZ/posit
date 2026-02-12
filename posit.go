@@ -170,7 +170,7 @@ const (
 	// Fast O(n) heuristic that works well for most graphs.
 	XBrandesKopf XCoordAlgorithm = iota
 	// XNetworkSimplex uses network simplex with auxiliary graph (Gansner et al. 1993).
-	// Globally optimal but slower. Enables cross-layer constraints for anti-stacking.
+	// Globally optimal but slower. Required for PreventStacking.
 	XNetworkSimplex
 )
 
@@ -236,14 +236,14 @@ type Options struct {
 	// cross-layer constraints but is slower for large graphs.
 	XCoordAlgorithm XCoordAlgorithm
 
-	// PreventStacking adds cross-layer separation constraints to prevent
-	// connected nodes from being vertically aligned. This reduces visual
+	// PreventStacking nudges connected nodes apart after X coordinate
+	// assignment to prevent vertical alignment. This reduces visual
 	// clutter from vertical edges. Only effective when XCoordAlgorithm
 	// is XNetworkSimplex. Default: false.
 	PreventStacking bool
 
-	// StackingMinSep is the minimum horizontal separation between connected
-	// nodes on adjacent layers when PreventStacking is enabled.
+	// StackingMinSep is the minimum edge-to-edge gap between connected
+	// nodes when PreventStacking is enabled.
 	// Default: 120 (matches ComputeOptimalSides gap threshold to avoid same-side routing).
 	StackingMinSep float64
 }

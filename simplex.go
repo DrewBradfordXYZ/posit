@@ -286,6 +286,31 @@ func (t *spanningTree) postorderNodes() []string {
 
 // initCutValues computes cut values for all tree edges.
 func (t *spanningTree) initCutValues(s *layoutState) {
+	// Build adjacency lists for O(degree) per node instead of O(E)
+	outgoing := make(map[string][]edgeKey, len(s.nodes))
+	incoming := make(map[string][]edgeKey, len(s.nodes))
+	for key := range s.edges {
+		outgoing[key.from] = append(outgoing[key.from], key)
+		incoming[key.to] = append(incoming[key.to], key)
+	}
+	// Sort for determinism since s.edges is a map
+	for _, keys := range outgoing {
+		sort.Slice(keys, func(i, j int) bool {
+			if keys[i].to != keys[j].to {
+				return keys[i].to < keys[j].to
+			}
+			return keys[i].id < keys[j].id
+		})
+	}
+	for _, keys := range incoming {
+		sort.Slice(keys, func(i, j int) bool {
+			if keys[i].from != keys[j].from {
+				return keys[i].from < keys[j].from
+			}
+			return keys[i].id < keys[j].id
+		})
+	}
+
 	// Process in postorder (children before parents)
 	postorder := t.postorderNodes()
 
@@ -293,7 +318,7 @@ func (t *spanningTree) initCutValues(s *layoutState) {
 		if v == t.root {
 			continue
 		}
-		t.assignCutValue(s, v)
+		t.assignCutValue(s, v, outgoing[v], incoming[v])
 	}
 }
 
@@ -302,7 +327,7 @@ func (t *spanningTree) initCutValues(s *layoutState) {
 // 1. The weight of the tree edge itself
 // 2. Non-tree edges crossing the cut
 // 3. Cut values of child tree edges (propagation)
-func (t *spanningTree) assignCutValue(s *layoutState, v string) {
+func (t *spanningTree) assignCutValue(s *layoutState, v string, outEdges, inEdges []edgeKey) {
 	parent := t.nodes[v].parent
 	if parent == "" {
 		return
@@ -324,33 +349,17 @@ func (t *spanningTree) assignCutValue(s *layoutState, v string) {
 		cutValue = 1 // Default weight
 	}
 
-	// Process all edges incident to v (except the edge to parent)
-	for key, edge := range s.edges {
-		// Skip if neither endpoint is v
-		if key.from != v && key.to != v {
-			continue
-		}
-
-		// Determine the "other" node and whether this is an out-edge from v
-		isOutEdge := key.from == v
-		var other string
-		if isOutEdge {
-			other = key.to
-		} else {
-			other = key.from
-		}
-
-		// Skip the edge to parent
+	// Process outgoing edges from v (using adjacency list for O(degree) instead of O(E))
+	for _, key := range outEdges {
+		other := key.to
 		if other == parent {
 			continue
 		}
+		edge := s.edges[key]
 
-		// pointsToHead: does this edge point in the same direction as the tree edge?
-		// If childIsTail (v->parent in graph), then out-edges from v point same direction
-		// If !childIsTail (parent->v in graph), then in-edges to v point same direction
-		pointsToHead := isOutEdge == childIsTail
+		// isOutEdge=true, pointsToHead = true == childIsTail
+		pointsToHead := childIsTail
 
-		// Add or subtract the edge weight
 		if pointsToHead {
 			cutValue += int(edge.weight)
 		} else {
@@ -358,16 +367,42 @@ func (t *spanningTree) assignCutValue(s *layoutState, v string) {
 		}
 
 		// If this is a tree edge to a child, propagate its cut value
-		// Must verify other is actually a child (parent == v), not just any tree edge
 		if t.isTreeEdge(key) && t.nodes[other] != nil && t.nodes[other].parent == v {
-			// Get the cut value of the child tree edge
-			// Use ok idiom since cut value of 0 is valid (balanced edge)
 			childCutValue, ok := t.cutValues[edgeKey{from: other, to: v}]
 			if !ok {
 				childCutValue = t.cutValues[edgeKey{from: v, to: other}]
 			}
+			if pointsToHead {
+				cutValue -= childCutValue
+			} else {
+				cutValue += childCutValue
+			}
+		}
+	}
 
-			// Propagate: opposite sign of pointsToHead
+	// Process incoming edges to v (using adjacency list for O(degree) instead of O(E))
+	for _, key := range inEdges {
+		other := key.from
+		if other == parent {
+			continue
+		}
+		edge := s.edges[key]
+
+		// isOutEdge=false, pointsToHead = false == childIsTail
+		pointsToHead := !childIsTail
+
+		if pointsToHead {
+			cutValue += int(edge.weight)
+		} else {
+			cutValue -= int(edge.weight)
+		}
+
+		// If this is a tree edge to a child, propagate its cut value
+		if t.isTreeEdge(key) && t.nodes[other] != nil && t.nodes[other].parent == v {
+			childCutValue, ok := t.cutValues[edgeKey{from: other, to: v}]
+			if !ok {
+				childCutValue = t.cutValues[edgeKey{from: v, to: other}]
+			}
 			if pointsToHead {
 				cutValue -= childCutValue
 			} else {

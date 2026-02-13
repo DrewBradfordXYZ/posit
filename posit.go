@@ -517,6 +517,8 @@ type Layout struct {
 
 // Edge returns the layout for an edge by its source and target node IDs.
 // This method provides unambiguous edge lookup regardless of node ID contents.
+// For graphs with multi-edges (multiple edges between the same pair of nodes),
+// this returns an arbitrary match; use EdgeByID for a specific edge.
 // Returns the EdgeLayout and true if found, or zero value and false if not.
 func (l *Layout) Edge(from, to string) (EdgeLayout, bool) {
 	for _, e := range l.Edges {
@@ -525,6 +527,16 @@ func (l *Layout) Edge(from, to string) (EdgeLayout, bool) {
 		}
 	}
 	return EdgeLayout{}, false
+}
+
+// EdgeByID returns the layout for a specific multi-edge by its source, target,
+// and edge ID. Use this instead of Edge when multiple edges exist between the
+// same pair of nodes. Returns the EdgeLayout and true if found, or zero value
+// and false if not.
+func (l *Layout) EdgeByID(from, to, id string) (EdgeLayout, bool) {
+	key := from + "->" + to + ":" + id
+	e, ok := l.Edges[key]
+	return e, ok
 }
 
 // Graph represents a directed graph to be laid out.
@@ -811,6 +823,10 @@ type IncrementalOptions struct {
 // It preserves layer assignments and X positions for unchanged nodes, only
 // re-running Y coordinate assignment for affected layers and re-routing edges
 // connected to changed nodes.
+//
+// Note: this method modifies the Graph's node dimensions to match
+// changes.Changes. Subsequent calls to Layout() will use the updated
+// dimensions.
 func (g *Graph) IncrementalLayout(base *Layout, changes IncrementalOptions, opts ...Options) *Layout {
 	// Apply dimension changes to the graph
 	for id, newOpts := range changes.Changes {

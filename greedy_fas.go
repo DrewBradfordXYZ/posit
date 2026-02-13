@@ -1,6 +1,9 @@
 package posit
 
-import "sort"
+import (
+	"slices"
+	"sort"
+)
 
 // negativeInfinity is used as an initial value when finding the maximum
 // difference between out-degree and in-degree in the greedy FAS algorithm.
@@ -107,7 +110,7 @@ func (s *layoutState) makeAcyclicGreedy() {
 		// Process all sinks
 		sort.Strings(sinks) // Deterministic ordering
 		for _, id := range sinks {
-			sR = append([]string{id}, sR...) // Prepend to sR
+			sR = append(sR, id)
 			delete(remaining, id)
 		}
 
@@ -149,7 +152,8 @@ func (s *layoutState) makeAcyclicGreedy() {
 		}
 	}
 
-	// Final ordering: sL followed by sR
+	// Final ordering: sL followed by reversed sR
+	slices.Reverse(sR)
 	ordering := append(sL, sR...)
 
 	// Build position map for the ordering

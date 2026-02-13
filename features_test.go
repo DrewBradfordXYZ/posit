@@ -1716,6 +1716,39 @@ func TestEdgeLookup_MultiEdge(t *testing.T) {
 	}
 }
 
+func TestEdgeLookup_EdgeByID(t *testing.T) {
+	g := NewGraph()
+	g.AddNode("A", NodeOptions{Width: 100, Height: 50})
+	g.AddNode("B", NodeOptions{Width: 100, Height: 50})
+	g.MustAddEdge("A", "B", EdgeOptions{ID: "first"})
+	g.MustAddEdge("A", "B", EdgeOptions{ID: "second"})
+
+	layout := g.Layout()
+
+	// EdgeByID should find each specific edge
+	e1, ok1 := layout.EdgeByID("A", "B", "first")
+	if !ok1 {
+		t.Fatal("EdgeByID should find A->B:first")
+	}
+	if e1.From != "A" || e1.To != "B" {
+		t.Error("EdgeByID returned wrong endpoints for first")
+	}
+
+	e2, ok2 := layout.EdgeByID("A", "B", "second")
+	if !ok2 {
+		t.Fatal("EdgeByID should find A->B:second")
+	}
+	if e2.From != "A" || e2.To != "B" {
+		t.Error("EdgeByID returned wrong endpoints for second")
+	}
+
+	// Non-existent ID should return false
+	_, ok3 := layout.EdgeByID("A", "B", "nonexistent")
+	if ok3 {
+		t.Error("EdgeByID should not find nonexistent edge ID")
+	}
+}
+
 // ==================== Validate Tests ====================
 
 func TestValidate_RouteStyle(t *testing.T) {
